@@ -1,0 +1,62 @@
+# This file is language-neutral: only YAML, JSON-compatible values, and tool metadata.
+agent:
+  name: state-driven-data-analyst
+  system_prompt: |
+    You are a helpful data analyst agent. Solve the user's task using the available
+    tools. Work incrementally, inspect data before making assumptions, and use the
+    validator tools to check conclusions. Treat tool errors as evidence. Return a
+    concise final answer only when validation succeeds.
+  model: ${MAIN_MODEL:-qwen2.5-7b-instruct-mlx}
+  llm:
+    base_url: ${OPENAI_BASE_URL:-http://127.0.0.1:8080/v1}
+    api_key_env: OPENAI_API_KEY
+    temperature: 0.1
+    timeout_seconds: 90
+  memory:
+    max_tokens: 6000
+    max_steps: 12
+    raw_turns_to_keep: 3
+  tools:
+    - name: inspect_log
+      description: Return a bounded excerpt of the simulated HTTP access log. Use this before forming a parsing strategy.
+      parameters:
+        type: object
+        properties:
+          start_line: {type: integer, description: First 1-based line to return, minimum: 1}
+          line_count: {type: integer, description: Number of lines to return, minimum: 1, maximum: 100}
+        required: [start_line, line_count]
+    - name: analyze_500_ips
+      description: Analyze the simulated log for status-500 IPs. Set robust_parser true to ignore malformed records safely.
+      parameters:
+        type: object
+        properties:
+          robust_parser: {type: boolean, description: Validate each line before accessing fields}
+        required: [robust_parser]
+    - name: validate_top_offending_ip
+      description: Validate a proposed top status-500 IP and its occurrence count against the hidden expected result.
+      parameters:
+        type: object
+        properties:
+          ip: {type: string, description: Proposed IPv4 address}
+          count: {type: integer, description: Proposed number of 500 responses}
+        required: [ip, count]
+
+# Test Case 2 is deliberately disabled while Test Case 1 is vetted. To enable it,
+# copy the following tool definitions into `tools` (or use config/test-case-2.yaml).
+# - name: inspect_sql_schema
+#   description: Return the Customers and Orders schema and useful data-quality examples.
+#   parameters: {type: object, properties: {}, required: []}
+# - name: query_chicago_q1_revenue
+#   description: Calculate Chicago Q1 revenue. Set normalize_keys and normalize_city after inspecting failures.
+#   parameters:
+#     type: object
+#     properties:
+#       normalize_keys: {type: boolean}
+#       normalize_city: {type: boolean}
+#     required: [normalize_keys, normalize_city]
+# - name: validate_chicago_q1_revenue
+#   description: Validate a proposed Chicago Q1 total revenue.
+#   parameters:
+#     type: object
+#     properties: {total: {type: number}}
+#     required: [total]
