@@ -1,3 +1,12 @@
-# Rust implementation placeholder
+# State-Driven Agent — Rust
 
-This directory is reserved for the same YAML-driven state-machine contract used by `agent-python`: resolve a trusted immutable config reference at session creation, persist its hash, preserve workflow evidence outside compactable memory, and permit final completion only at the workflow graph's terminal node. See [the shared runbook](../test-cases.md).
+This standalone Tokio/Axum server exposes the shared REST and SSE paths and uses `sqlx` PostgreSQL JSONB persistence.
+
+```sh
+cd agent-rust
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo run --release
+```
+
+It listens on `PORT` (default `8082`). Configure `AGENT_CONFIG_ROOT` and `AGENT_SESSION_DATABASE_URL`. Its REST contract is [`../agent-go/openapi.yaml`](../agent-go/openapi.yaml); details are in [`docs/implementation.md`](docs/implementation.md).

@@ -89,7 +89,7 @@ Expected result: the agent normalizes Chicago casing and `ID_###` foreign keys, 
 
 ## Test Case 3 — Multi-Phase HR and Financial Compliance Audit
 
-The fixture generator creates `employees` in `agent-python/data/commerce.sqlite3` with 1,000 records (`emp_id` 1–1000). Age corruption includes `NULL` and semicolon-delimited values; salary corruption includes currency strings and `UNKNOWN`; city casing includes `new york`. The valid, case-insensitive New York median is `92500.0`.
+The Python-only fixture generator creates the dedicated PostgreSQL tables `agent_fixture_access_logs`, `agent_fixture_customers`, `agent_fixture_orders`, and `agent_fixture_employees`. The employee table has 1,000 records (`emp_id` 1–1000). Age corruption includes `NULL` and semicolon-delimited values; salary corruption includes currency strings and `UNKNOWN`; city casing includes `new york`. The valid, case-insensitive New York median is `92500.0`. It uses `AGENT_FIXTURE_DATABASE_URL`, falling back to `AGENT_SESSION_DATABASE_URL`.
 
 Create the Case 3 session:
 
@@ -132,7 +132,7 @@ uv run --project agent-python python agent-python/scripts/verify_test_case_3.py 
   --replay --output session-case-3-replay.json
 ```
 
-The first command is safe to repeat and recreates the deterministic employee fixture in `agent-python/data/commerce.sqlite3`. The second command does not call the LLM server: it uses a fixed decision sequence and a deterministic reflection response, writes a complete session artifact, and exits nonzero if any assertion fails. On success it reports:
+The first command is safe to repeat and atomically recreates only the dedicated PostgreSQL fixture tables. The second command does not call the LLM server: it uses a fixed decision sequence and a deterministic reflection response, writes a complete session artifact, and exits nonzero if any assertion fails. On success it reports:
 
 ```text
 ✅ Success: Agent generated the final matrix report.

@@ -3,20 +3,34 @@ from __future__ import annotations
 
 import json
 import re
-import sqlite3
+import os
 from collections import Counter
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+import psycopg
+from dotenv import load_dotenv
+
 ROOT = Path(__file__).resolve().parents[3]
-DATA = ROOT / "agent-python" / "data"
 IP = re.compile(r"^(?P<ip>(?:\d{1,3}\.){3}\d{1,3})\s+.*?\s(?P<status>\d{3})$")
+DEFAULT_DATABASE_URL = "postgresql://user:password@192.168.1.50:5432/elite_rag"
 Tool = Callable[[dict[str, Any]], Awaitable[str]]
+
+
+def _connection() -> psycopg.Connection[Any]:
+    load_dotenv(ROOT / ".env")
+    return psycopg.connect(os.getenv("AGENT_FIXTURE_DATABASE_URL") or os.getenv("AGENT_SESSION_DATABASE_URL") or DEFAULT_DATABASE_URL)
+
+
+def _log_lines() -> list[str]:
+    with _connection() as conn, conn.cursor() as cursor:
+        cursor.execute("SELECT line FROM agent_fixture_access_logs ORDER BY line_number")
+        return [row[0] for row in cursor.fetchall()]
 
 
 async def inspect_log(args: dict[str, Any]) -> str:
     start, count = int(args["start_line"]), int(args["line_count"])
-    lines = (DATA / "access.log").read_text(encoding="utf-8").splitlines()
+    lines = _log_lines()
     return "\n".join(f"{index}: {line}" for index, line in enumerate(lines[start - 1:start - 1 + count], start))
 
 
@@ -24,7 +38,7 @@ async def analyze_500_ips(args: dict[str, Any]) -> str:
     robust = bool(args["robust_parser"])
     counts: Counter[str] = Counter()
     try:
-        for line_number, line in enumerate((DATA / "access.log").read_text(encoding="utf-8").splitlines(), 1):
+        for line_number, line in enumerate(_log_lines(), 1):
             if robust:
                 match = IP.match(line)
                 if not match:
@@ -49,7 +63,7 @@ async def validate_top_offending_ip(args: dict[str, Any]) -> str:
 
 def _expected_log_result() -> tuple[str, int]:
     counts: Counter[str] = Counter()
-    for line in (DATA / "access.log").read_text(encoding="utf-8").splitlines():
+    for line in _log_lines():
         match = IP.match(line)
         if match and match.group("status") == "500":
             counts[match.group("ip")] += 1
@@ -57,23 +71,29 @@ def _expected_log_result() -> tuple[str, int]:
 
 
 async def inspect_sql_schema(_: dict[str, Any]) -> str:
-    with sqlite3.connect(DATA / "commerce.sqlite3") as conn:
-        schemas = {table: conn.execute(f"PRAGMA table_info({table})").fetchall() for table in ("customers", "orders")}
-        examples = conn.execute("SELECT id, name, city FROM customers WHERE lower(city) = 'chicago' LIMIT 6").fetchall()
-        bad_keys = conn.execute("SELECT order_id, cust_id, amount, ordered_at FROM orders WHERE typeof(cust_id) = 'text' LIMIT 6").fetchall()
+    with _connection() as conn, conn.cursor() as cursor:
+        schemas: dict[str, list[tuple[Any, ...]]] = {}
+        for table in ("agent_fixture_customers", "agent_fixture_orders"):
+            cursor.execute("SELECT column_name, data_type FROM information_schema.columns WHERE table_name = %s ORDER BY ordinal_position", (table,))
+            schemas[table.removeprefix("agent_fixture_")] = cursor.fetchall()
+        cursor.execute("SELECT id, name, city FROM agent_fixture_customers WHERE lower(city) = 'chicago' LIMIT 6")
+        examples = cursor.fetchall()
+        cursor.execute("SELECT order_id, cust_id, amount, ordered_at FROM agent_fixture_orders WHERE cust_id LIKE 'ID_%%' LIMIT 6")
+        bad_keys = cursor.fetchall()
     return json.dumps({"schema": schemas, "chicago_examples": examples, "string_key_examples": bad_keys}, default=str)
 
 
 async def query_chicago_q1_revenue(args: dict[str, Any]) -> str:
     keys, city = bool(args["normalize_keys"]), bool(args["normalize_city"])
-    customer_key = "CAST(REPLACE(o.cust_id, 'ID_', '') AS INTEGER)" if keys else "o.cust_id"
+    customer_key = "CAST(REPLACE(o.cust_id, 'ID_', '') AS INTEGER)" if keys else "o.cust_id::INTEGER"
     city_condition = "lower(c.city) = 'chicago'" if city else "c.city = 'Chicago'"
-    sql = f"""SELECT ROUND(COALESCE(SUM(o.amount), 0), 2) FROM orders o
-              JOIN customers c ON c.id = {customer_key}
+    sql = f"""SELECT ROUND(COALESCE(SUM(o.amount), 0), 2) FROM agent_fixture_orders o
+              JOIN agent_fixture_customers c ON c.id = {customer_key}
               WHERE {city_condition} AND o.ordered_at >= '2026-01-01' AND o.ordered_at < '2026-04-01'"""
-    with sqlite3.connect(DATA / "commerce.sqlite3") as conn:
-        total = conn.execute(sql).fetchone()[0]
-    return json.dumps({"total": total, "normalize_keys": keys, "normalize_city": city})
+    with _connection() as conn, conn.cursor() as cursor:
+        cursor.execute(sql)
+        total = cursor.fetchone()[0]
+    return json.dumps({"total": float(total), "normalize_keys": keys, "normalize_city": city})
 
 
 async def validate_chicago_q1_revenue(args: dict[str, Any]) -> str:
@@ -83,8 +103,9 @@ async def validate_chicago_q1_revenue(args: dict[str, Any]) -> str:
 
 
 def _employee_rows() -> list[tuple[int, str, str, str, str]]:
-    with sqlite3.connect(DATA / "commerce.sqlite3") as conn:
-        return conn.execute("SELECT emp_id, name, age, salary, city FROM employees ORDER BY emp_id").fetchall()
+    with _connection() as conn, conn.cursor() as cursor:
+        cursor.execute("SELECT emp_id, name, age, salary, city FROM agent_fixture_employees ORDER BY emp_id")
+        return cursor.fetchall()
 
 
 def _employee_failure(row: int, field: str, value: str) -> str:

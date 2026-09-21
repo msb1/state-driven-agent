@@ -109,7 +109,7 @@ The FastAPI application exposes OpenAPI/Swagger documentation at `/docs`:
 `scripts/generate_fixtures.py` creates deterministic fixtures under `agent-python/data/`:
 
 - `access.log` has 650 HTTP-like lines, ten malformed rows, and varied status codes. The fragile parser fails with an index error; the robust parser validates the record shape before reading the status and identifies the top offending IP.
-- `commerce.sqlite3` has 2,200 customers and 6,500 orders. City casing and customer keys are intentionally inconsistent. The first join can omit rows; normalization of `lower(city)` and `ID_###` keys is required before validation. It also contains the 1,000-row Case 3 `employees` fixture with layered age, salary, and city corruption.
+- Dedicated PostgreSQL fixture tables have 2,200 customers and 6,500 orders. City casing and customer keys are intentionally inconsistent. The first join can omit rows; normalization of `lower(city)` and `ID_###` keys is required before validation. `agent_fixture_employees` contains the 1,000-row Case 3 fixture with layered age, salary, and city corruption.
 
 These environments demonstrate the important behavior: a failed first attempt is not an unhandled exception. It is evidence in session memory that informs the next model action.
 
