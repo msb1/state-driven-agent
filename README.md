@@ -12,21 +12,22 @@ A Universal State-Driven AI Agent is a process with four explicit components:
 2. **Environment and tools** — independent functions that perform local or remote work and return serializable strings or JSON. Exceptions are converted into error results at this boundary.
 3. **Session memory** — an ordered list of role/content messages containing the original user goal, model actions, tool calls, tool results, and intermediate conclusions.
 4. **Compactor** — a threshold-triggered operation that compresses older history into a structured context ledger while preserving the original goal and a recent raw-turn buffer.
+5. **Workflow graph (optional)** — immutable, evidence-gated phases that control when an agent may complete a multi-step task.
 
-The system prompt and original user goal are anchors. The working memory is mutable. Tool implementations are replaceable business logic, while the core agent only coordinates state, HTTP/JSON model calls, and transitions.
+The system prompt and original user goal are anchors. The working memory is mutable. A session selects and snapshots one trusted YAML configuration at creation time, including any workflow graph. Tool implementations are replaceable business logic, while the core agent coordinates state, HTTP/JSON model calls, compaction, and workflow transitions.
 
 ## Generic architecture
 
 ```text
                  ┌──────────────────────────────┐
-                 │ Immutable system configuration│
+                 │ Immutable session config      │
                  └──────────────┬───────────────┘
                                 │
 User goal ──► Initialize memory │
                                 ▼
                     ┌─────────────────────────┐
                     │ Session state            │
-                    │ goal + ledger + raw tail │
+                    │ goal + workflow + ledger │
                     └────────────┬────────────┘
                                  │
                  threshold? ─────┴───── yes ──► Compactor
@@ -58,8 +59,8 @@ while session_is_active:
         ledger, recent_raw = compact(memory[:-raw_turns_to_keep], memory[-raw_turns_to_keep:])
         memory = [original_goal, ledger, recent_raw...]
 
-    decision = llm(system_prompt + memory)
-    if decision.kind == "final":
+    decision = llm(system_prompt + workflow_state + memory)
+    if decision.kind == "final" and workflow_is_complete:
         return decision.content
 
     result = run_tool_safely(decision.name, decision.arguments)
@@ -74,7 +75,8 @@ while session_is_active:
 - **Error isolation:** a tool failure becomes a tool message such as `ERROR: ...`; the model can inspect it, change strategy, and retry.
 - **Separation of concerns:** the loop manages state and model calls; domain behavior lives in independently testable tools.
 - **Observable state:** every decision, result, failure, compaction, and final answer is represented in the session history.
-- **Configuration-first behavior:** prompts, thresholds, model endpoint, and tool schemas are YAML/`.env` inputs rather than hidden code constants.
+- **No-restart workflow onboarding:** a session resolves a trusted relative YAML config reference and snapshots its content hash; adding a new workflow YAML does not interrupt existing sessions.
+- **Evidence-gated completion:** configured phase graphs retain transition evidence outside compactable raw history and never convert intermediate prose into a successful final answer.
 
 ## Memory weighting and compaction
 
@@ -94,10 +96,10 @@ This sliding splice preserves both foundational intent and high-fidelity recency
 
 | Path | Purpose |
 | --- | --- |
-| `config/` | Shared YAML configuration usable by implementations in any language. |
+| `config/` | Trusted immutable workflow-config repository. New YAML workflows are available to new sessions without a server restart. |
 | `.env` | Shared endpoint, model, and secret defaults (keep real credentials out of source control). |
 | `agent-python/` | Current FastAPI implementation using only standard data structures and `httpx`. |
 | `agent-python/docs/architect.md` | Python mapping of the universal architecture and implementation decisions. |
 | `agent-go/`, `agent-rust/`, `agent-java/` | Reserved sibling implementations that will use the same contracts. |
 
-The Python implementation includes two simulated environments: a malformed HTTP log parser and a messy multi-table revenue join. See [agent-python/README.md](agent-python/README.md) to run them.
+The Python implementation includes three simulated environments: a malformed HTTP log parser, a messy multi-table revenue join, and a multi-phase HR/financial compliance audit that stress-tests workflow progression and hybrid compaction. Its FastAPI service persists sessions and immutable resolved config snapshots in PostgreSQL, and can resume completed or interrupted runs through SSE endpoints with phase-level interim events. See [the test-case runbook](test-cases.md) for the exact commands, including persistence Cases 4 and 5.

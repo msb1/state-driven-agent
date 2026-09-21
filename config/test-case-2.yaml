@@ -1,31 +1,46 @@
-# Enable this file only after Test Case 1 is vetted:
-#   STATE_DRIVEN_CONFIG=config/test-case-2.yaml uv run uvicorn agent_python.api:app --app-dir agent-python/src
-#
-# agent:
-#   name: state-driven-data-analyst-sql
-#   system_prompt: |
-#     You are a helpful data analyst agent. Inspect schemas, normalize inconsistent
-#     city casing and foreign keys, and validate the final Q1 Chicago revenue.
-#   model: qwen2.5-7b-instruct-mlx
-#   llm:
-#     base_url: ${OPENAI_BASE_URL:-http://127.0.0.1:8080/v1}
-#     api_key_env: OPENAI_API_KEY
-#     temperature: 0.1
-#     timeout_seconds: 90
-#   memory: {max_tokens: 6000, max_steps: 12, raw_turns_to_keep: 3}
-#   tools:
-#     - name: inspect_sql_schema
-#       description: Return table schemas and examples of case/key inconsistencies.
-#       parameters: {type: object, properties: {}, required: []}
-#     - name: query_chicago_q1_revenue
-#       description: Calculate Q1 revenue for Chicago. Normalize city and keys when appropriate.
-#       parameters:
-#         type: object
-#         properties: {normalize_keys: {type: boolean}, normalize_city: {type: boolean}}
-#         required: [normalize_keys, normalize_city]
-#     - name: validate_chicago_q1_revenue
-#       description: Validate a proposed Q1 Chicago total.
-#       parameters:
-#         type: object
-#         properties: {total: {type: number}}
-#         required: [total]
+# Immutable Test Case 2 workflow profile. Select with config_ref: "test-case-2.yaml".
+# Add profiles to config/ without restarting the API server.
+
+agent:
+  name: state-driven-data-analyst-sql
+  system_prompt: |
+    You are a helpful data analyst agent. Inspect schemas, normalize inconsistent
+    city casing and foreign keys, and validate the final Q1 Chicago revenue.
+  model: qwen2.5-7b-instruct-mlx
+  llm:
+    base_url: ${OPENAI_BASE_URL:-http://127.0.0.1:8080/v1}
+    api_key_env: OPENAI_API_KEY
+    temperature: 0.1
+    timeout_seconds: 90
+  memory: {max_tokens: 6000, max_steps: 12, raw_turns_to_keep: 3, hybrid_reflection: true}
+  # A one-phase workflow preserves the existing normalized-query/validator flow.
+  workflow:
+    entry_phase: validate_chicago_q1_revenue
+    phases:
+      - id: validate_chicago_q1_revenue
+        name: Validate normalized Chicago Q1 revenue
+        instruction: Inspect the schema, normalize city and foreign keys, and validate the final total.
+        allowed_tools: [inspect_sql_schema, query_chicago_q1_revenue, validate_chicago_q1_revenue]
+        completion:
+          - description: The Chicago Q1 revenue validator has confirmed the normalized total.
+            tool: validate_chicago_q1_revenue
+            result: {valid: true}
+        transitions:
+          - to: complete
+            when: phase_complete
+  tools:
+    - name: inspect_sql_schema
+      description: Return table schemas and examples of case/key inconsistencies.
+      parameters: {type: object, properties: {}, required: []}
+    - name: query_chicago_q1_revenue
+      description: Calculate Q1 revenue for Chicago. Normalize city and keys when appropriate.
+      parameters:
+        type: object
+        properties: {normalize_keys: {type: boolean}, normalize_city: {type: boolean}}
+        required: [normalize_keys, normalize_city]
+    - name: validate_chicago_q1_revenue
+      description: Validate a proposed Q1 Chicago total.
+      parameters:
+        type: object
+        properties: {total: {type: number}}
+        required: [total]

@@ -1,4 +1,4 @@
-"""Create deterministic, intentionally messy fixtures for the two simulated tests."""
+"""Create deterministic, intentionally messy fixtures for the simulated tests."""
 from __future__ import annotations
 
 import random
@@ -53,8 +53,28 @@ def make_database() -> None:
         conn.executemany("INSERT INTO orders VALUES (?, ?, ?, ?)", orders)
         conn.execute("CREATE INDEX orders_customer_date ON orders(cust_id, ordered_at)")
 
+        # Test Case 3 stores all audit inputs as text. Its 1..1000 ID range
+        # resolves the source scenario's conflict between 200 IDs and 1,000 rows.
+        conn.execute("""
+            CREATE TABLE employees (
+                emp_id INTEGER PRIMARY KEY, name TEXT NOT NULL, age TEXT NOT NULL,
+                salary TEXT NOT NULL, city TEXT NOT NULL
+            )
+        """)
+        base_cities = ("New York", "Chicago", "Austin", "Seattle")
+        employees: list[tuple[int, str, str, str, str]] = []
+        for emp_id in range(1, 1001):
+            # NULL takes precedence where the age patterns overlap; UNKNOWN
+            # does the same where the salary patterns overlap.
+            age = "NULL" if emp_id % 15 == 0 else ("41; extra_field_corrupted" if emp_id % 22 == 0 else str(22 + emp_id % 43))
+            salary = "UNKNOWN" if emp_id % 18 == 0 else (f"${75_000 + (emp_id % 9) * 5_000:,}" if emp_id % 10 == 0 else "92500")
+            city = "new york" if emp_id % 7 == 0 else base_cities[(emp_id - 1) % len(base_cities)]
+            employees.append((emp_id, f"Emp_{emp_id}", age, salary, city))
+        conn.executemany("INSERT INTO employees VALUES (?, ?, ?, ?, ?)", employees)
+        conn.execute("CREATE INDEX employees_city ON employees(city)")
+
 
 if __name__ == "__main__":
     make_log()
     make_database()
-    print("Generated 650 log lines (including 10 malformed) and 2,200 customers / 6,500 orders.")
+    print("Generated 650 log lines (including 10 malformed), 2,200 customers / 6,500 orders, and 1,000 corrupted employees.")

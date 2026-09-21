@@ -1,217 +1,293 @@
 # Universal State-Driven AI Agent Test Cases
 
-This document defines the two simulated workflows used to exercise the agent's state machine. They are deliberately designed so that an initial simplistic approach can fail, the failure is returned as tool data, and a later model step can correct the strategy.
+This is the shared migration runbook for the three deterministic test cases. The Python service selects an immutable YAML workflow configuration when a session is created, so one running server can host all cases without a restart.
 
-## Common test objectives
+## Configuration repository and phase workflows
 
-Both cases verify that the agent:
-
-1. Initializes session memory with the user's goal before calling a tool.
-2. Selects tools using structured JSON arguments.
-3. Preserves tool successes and failures as messages in session memory.
-4. Uses evidence from a failed attempt to choose a safer follow-up action.
-5. Keeps the original goal intact during compaction.
-6. Retains the most recent raw turns while compressing older history into a structured ledger.
-7. Returns a final answer only after the environment's validation tool succeeds.
-
-The tool boundary must never expose an unhandled exception to the API. A failure is expected to be serialized as an `ERROR: ...` string and appended as a `tool` message.
-
-## Test Case 1: Broken Log Parser
-
-### Purpose
-
-Verify safe parsing and recovery from malformed log records. This is an intermediate operating-system/data-processing task that tests string handling, validation, and iterative correction.
-
-### User goal
-
-> Find all IP addresses in the access log that generated an HTTP 500 response, count their occurrences, and report the top offending IP.
-
-The goal is inserted as the first session-memory record:
-
-```json
-{
-  "role": "user",
-  "content": "Find all IP addresses in the access log that generated an HTTP 500 response, count their occurrences, and report the top offending IP."
-}
-```
-
-### Fixture
-
-Run the generator from `agent-python`:
-
-```sh
-uv run python scripts/generate_fixtures.py
-```
-
-This creates `agent-python/data/access.log` with:
-
-- 650 total lines;
-- at least 10 malformed records;
-- valid HTTP-like records containing multiple methods and status codes;
-- successful responses such as 200, 201, and 302;
-- client/server errors such as 400, 404, 500, and 503;
-- a deterministic top offender for repeatable validation.
-
-Representative valid records:
+The server reads approved workflow YAML files from `config/` by default. Override that directory only for server administration with `AGENT_CONFIG_ROOT`; callers may supply only a relative `config_ref` inside that root. Session state and the resolved configuration snapshot are stored in PostgreSQL. The default connection is the supplied `elite_rag` URL; deployers can override it with `AGENT_SESSION_DATABASE_URL`.
 
 ```text
-192.168.1.1 - - [18/Sep/2026] "GET /home HTTP/1.1" 200
-10.0.0.5 - - [18/Sep/2026] "POST /checkout HTTP/1.1" 500
-192.168.1.1 - - [18/Sep/2026] "GET /api/v2 HTTP/1.1" 500
+config/
+├── test-case-1.yaml    # Test Case 1
+├── test-case-2.yaml    # Test Case 2
+└── test-case-3.yaml    # Test Case 3
 ```
 
-Representative malformed records include missing fields, blank rows, invalid IP text, and records without a status code:
+At `POST /sessions`, the server resolves the file, validates it, hashes its bytes, creates an engine from that snapshot, and records `config_ref` and `config_sha256` in the session. Existing sessions cannot change behavior if a new YAML file is later added.
 
-```text
-MALFORMED_ROW_NO_IP_HERE ERROR_CRASH
-10.0.0.9 incomplete
-192.168.1.3 - - [18/Sep/2026] "GET /missing-status HTTP/1.1"
-```
+Add a new workflow without restarting the server by placing a versioned YAML file such as `config/customer-onboarding-v1.yaml` in this directory, then creating a session with `"config_ref":"customer-onboarding-v1.yaml"`. Configurations may compose only tools compiled into the server; adding new tool code still requires a deployment.
 
-### Tools
+Workflow YAML may omit `workflow` for legacy single-task behavior. When it declares a workflow graph, a final answer is allowed only after the terminal `complete` node is reached. Each phase records tool evidence and transitions outside compactable raw message history. Current test cases use linear graphs; the schema also reserves evidence and unconditional edges for future branching or skipping.
 
-The active tools are configured in `config/agent.yaml`:
+## Start the server once
 
-| Tool | Role |
-| --- | --- |
-| `inspect_log` | Return a bounded excerpt so the agent can inspect record shape. |
-| `analyze_500_ips` | Run either a deliberately fragile or validated parser. |
-| `validate_top_offending_ip` | Check the proposed IP and count against the fixture's expected result. |
-
-### Expected recovery sequence
-
-1. The agent inspects a sample of the log.
-2. It may call `analyze_500_ips` with `robust_parser: false`.
-3. The malformed record causes a safe tool result similar to:
-
-   ```text
-   ERROR: naive parser failed at line 26: IndexError: list index out of range. Try robust_parser=true.
-   ```
-
-4. The error remains in session memory; it is not discarded and does not crash FastAPI.
-5. The agent retries with `robust_parser: true`.
-6. The parser validates the record shape before reading the IP or status and ignores malformed records.
-7. The agent submits the resulting IP/count pair to `validate_top_offending_ip`.
-8. The agent returns a final answer only when the validator reports `valid: true`.
-
-### Acceptance criteria
-
-- The malformed-row attempt produces a tool error, not an HTTP 500 from the agent server.
-- The robust attempt reports the deterministic top IP and count.
-- At least 10 malformed records are ignored.
-- The final answer identifies the top offending IP and its number of 500 responses.
-- Session memory contains the failed call, error result, corrected call, corrected result, validation call, and final response.
-
-The deterministic fixture currently yields `10.0.0.5` as the top offender with 83 HTTP 500 responses.
-
-## Test Case 2: Multi-Table SQL Join with Missing Foreign Keys
-
-### Purpose
-
-Verify schema inspection, data normalization, and correction of an incomplete relational join. This is an advanced enterprise-style workflow involving inconsistent casing and corrupted foreign-key representations.
-
-### User goal
-
-> Find the total revenue generated by customers from Chicago in Q1.
-
-The intended interpretation is case-insensitive Chicago matching and Q1 of 2026 (`2026-01-01` inclusive through `2026-04-01` exclusive).
-
-### Fixture
-
-Run the same generator:
+Generate every deterministic fixture from the repository root:
 
 ```sh
-uv run python scripts/generate_fixtures.py
+cd /Users/msb/Code/state-driven-agent
+uv run --project agent-python python agent-python/scripts/generate_fixtures.py
 ```
 
-This creates `agent-python/data/commerce.sqlite3` containing:
-
-- 2,200 rows in `customers`;
-- 6,500 rows in `orders`;
-- Chicago values with casing and whitespace variations, including `Chicago`, `chicago`, `CHICAGO`, and `Chicago `;
-- customer IDs stored as integers;
-- order foreign keys stored both as integers and strings such as `ID_002`;
-- orders across multiple dates, including Q1 and non-Q1 records.
-
-The small motivating example is represented directly in the fixture:
-
-```text
-customers: (1, "Alice", "Chicago"), (2, "Bob", "chicago")
-orders:    (101, 1, 150.0), (102, "ID_002", 90.0)
-```
-
-### Tools
-
-Test Case 2's tool definitions are intentionally commented out in `config/test-case-2.yaml` until Test Case 1 is vetted. Uncomment the complete `agent` configuration before running this case.
-
-| Tool | Role |
-| --- | --- |
-| `inspect_sql_schema` | Show table definitions and representative inconsistent values. |
-| `query_chicago_q1_revenue` | Calculate the total with independently selectable key and city normalization. |
-| `validate_chicago_q1_revenue` | Check the proposed total using the normalized query. |
-
-### Expected recovery sequence
-
-1. The agent inspects the schema and sample records.
-2. It may run a baseline query with `normalize_keys: false` and `normalize_city: false`.
-3. The baseline omits rows whose city casing or foreign-key representation does not match exactly.
-4. The resulting undercount remains in session memory as evidence.
-5. The agent retries with `normalize_city: true` and `normalize_keys: true`.
-6. The query uses case-insensitive city matching and converts `ID_###` order keys to the integer customer ID.
-7. The agent submits the normalized total to `validate_chicago_q1_revenue`.
-8. The agent returns a final answer only when the validator reports `valid: true`.
-
-### Acceptance criteria
-
-- The baseline query is allowed to be incomplete and must not be silently treated as validated.
-- The corrected query includes both city normalization and foreign-key normalization.
-- The validation tool confirms the final total.
-- Q1 boundaries are explicit and exclude records before January 1 or on/after April 1.
-- Session memory preserves the baseline query, its result, the corrected query, and validation evidence.
-
-The generated fixture currently produces a normalized Q1 Chicago total of `271017.77`. The exact value is deterministic because the generator uses a fixed random seed; regenerate fixtures before comparing results if the fixture-generation logic changes.
-
-## Running through the API
-
-Start the Python service from the repository root:
+Start the API once and leave it running:
 
 ```sh
-uv run --project agent-python uvicorn agent_python.api:app --app-dir agent-python/src --reload
+uv run --project agent-python uvicorn agent_python.api:app \
+  --app-dir agent-python/src --reload
 ```
 
-Create a session:
+List currently available immutable configurations:
 
 ```sh
-curl -X POST http://127.0.0.1:8000/sessions \
+curl -sS http://127.0.0.1:8000/configs | jq
+```
+
+The examples use `jq` to capture session IDs. Set `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `MAIN_MODEL` in `.env` or the environment before starting the server.
+
+## Test Case 1 — Broken Log Parser
+
+Create a session using `test-case-1.yaml`:
+
+```sh
+SESSION_ID=$(curl -sS -X POST http://127.0.0.1:8000/sessions \
   -H 'content-type: application/json' \
-  -d '{"user_prompt":"Find the top offending IP in the access log for HTTP 500 responses."}'
+  -d '{"config_ref":"test-case-1.yaml","user_prompt":"Find all IP addresses in the access log that generated an HTTP 500 response, count their occurrences, and report the top offending IP."}' \
+  | jq -r '.session.id')
+echo "SESSION_ID=${SESSION_ID}"
 ```
 
-Use the returned session ID to run the loop:
+Run and inspect it:
 
 ```sh
-curl -X POST http://127.0.0.1:8000/sessions/SESSION_ID/run \
+curl -sS -X POST "http://127.0.0.1:8000/sessions/${SESSION_ID}/run" \
+  -H 'content-type: application/json' -d '{"max_steps":12}' | jq
+curl -sS "http://127.0.0.1:8000/sessions/${SESSION_ID}" | jq
+```
+
+Expected result: the validator confirms top IP `10.0.0.5` with `83` HTTP 500 responses. Its single workflow phase reaches `complete` only after `validate_top_offending_ip` returns `valid: true`.
+
+## Test Case 2 — Multi-Table SQL Join
+
+Create a separate session using `test-case-2.yaml`:
+
+```sh
+SESSION_ID=$(curl -sS -X POST http://127.0.0.1:8000/sessions \
   -H 'content-type: application/json' \
-  -d '{"max_steps":12}'
+  -d '{"config_ref":"test-case-2.yaml","user_prompt":"Find the total revenue generated by customers from Chicago in Q1."}' \
+  | jq -r '.session.id')
+echo "SESSION_ID=${SESSION_ID}"
 ```
 
-Inspect the complete state, including memory and compaction ledger:
+Run and inspect it:
 
 ```sh
-curl http://127.0.0.1:8000/sessions/SESSION_ID
+curl -sS -X POST "http://127.0.0.1:8000/sessions/${SESSION_ID}/run" \
+  -H 'content-type: application/json' -d '{"max_steps":12}' | jq
+curl -sS "http://127.0.0.1:8000/sessions/${SESSION_ID}" | jq
 ```
 
-The same operations are available interactively through Swagger at `http://127.0.0.1:8000/docs`.
+Expected result: the agent normalizes Chicago casing and `ID_###` foreign keys, then the validator confirms Q1 revenue `271017.77`.
 
-## Compaction-specific checks
+## Test Case 3 — Multi-Phase HR and Financial Compliance Audit
 
-To test memory behavior independently of the domain result:
+The fixture generator creates `employees` in `agent-python/data/commerce.sqlite3` with 1,000 records (`emp_id` 1–1000). Age corruption includes `NULL` and semicolon-delimited values; salary corruption includes currency strings and `UNKNOWN`; city casing includes `new york`. The valid, case-insensitive New York median is `92500.0`.
 
-- lower `memory.max_tokens` or `memory.max_steps` in the active YAML file;
-- run enough tool iterations to cross the threshold;
-- verify the original goal remains present;
-- verify the historical prefix becomes a `[COMPACTED CONTEXT STATE]` ledger;
-- verify the newest `raw_turns_to_keep` messages remain unchanged;
-- verify the ledger separates truths, dead ends, and the current pivot.
+Create the Case 3 session:
 
-Compaction is a state-preservation feature, not a replacement for validation. A compacted summary must never be treated as proof when a validator tool can provide direct evidence.
+```sh
+SESSION_ID=$(curl -sS -X POST http://127.0.0.1:8000/sessions \
+  -H 'content-type: application/json' \
+  -d '{"config_ref":"test-case-3.yaml","user_prompt":"Perform a complete 3-Phase Financial Audit on the provided employee dataset:\n\nPhase 1: Identify all rows with corrupted age or salary fields. Log their IDs.\nPhase 2: Normalize the salary field to a standard float. Calculate the exact median salary for valid employees living in New York (case-insensitive).\nPhase 3: Output a clean, final markdown table breaking down the total valid headcount and average age per unique city.\n\nYou must execute your steps incrementally. Do not try to solve all phases in a single script."}' \
+  | jq -r '.session.id')
+echo "SESSION_ID=${SESSION_ID}"
+```
+
+Run the agent, retrieve state, and verify the result:
+
+```sh
+curl -sS -X POST "http://127.0.0.1:8000/sessions/${SESSION_ID}/run" \
+  -H 'content-type: application/json' -d '{"max_steps":30}' | jq
+curl -sS "http://127.0.0.1:8000/sessions/${SESSION_ID}" > session-case-3.json
+uv run --project agent-python python agent-python/scripts/verify_test_case_3.py session-case-3.json
+```
+
+Case 3 has three mandatory workflow phases:
+
+1. Phase 1 may record the currency, `NULL`, and semicolon parser failures, and must log IDs with the robust parser.
+2. Phase 2 may record the `UNKNOWN` salary and city-casing metric failures, and must calculate the normalized `92500.0` median.
+3. Phase 3 may record city-normalization and invalid-age failures, and must generate the clean markdown table and receive successful audit validation.
+
+The diagnostic failure evidence is optional for live model runs so a model that chooses the correct normalized path is not deadlocked. The deterministic replay deliberately executes every diagnostic path to stress compaction and hybrid reflection.
+
+Progress prose cannot mark this session complete. A successful session has `workflow.active_phase: null`, all three phase IDs in `workflow.completed_phases`, a final Phase 3 markdown answer, and at least three `compaction_events`. A model that refuses outstanding tools reaches the finite step limit with `status: "failed"`; it is never reported as completed.
+
+Each phase also has an explicit tool allow-list. If the model tries to call a later-phase tool early, the engine returns a workflow error and does not execute that tool; the model must finish the active phase first.
+
+## Deterministic Case 3 compaction regression
+
+The live API run tests model behavior and may take a shortcut through the optional diagnostic failures. Use the replay harness for the repeatable regression of workflow progression, compaction, and hybrid reflection. Run it from the repository root after regenerating fixtures if necessary:
+
+```sh
+uv run --project agent-python python agent-python/scripts/generate_fixtures.py
+uv run --project agent-python python agent-python/scripts/verify_test_case_3.py \
+  --replay --output session-case-3-replay.json
+```
+
+The first command is safe to repeat and recreates the deterministic employee fixture in `agent-python/data/commerce.sqlite3`. The second command does not call the LLM server: it uses a fixed decision sequence and a deterministic reflection response, writes a complete session artifact, and exits nonzero if any assertion fails. On success it reports:
+
+```text
+✅ Success: Agent generated the final matrix report.
+📊 Integration Metric: Compaction was triggered 3 times (minimum 3).
+✅ Hybrid reflection preserved required lessons.
+✅ All configured workflow phases completed.
+```
+
+Inspect the generated artifact when porting the test:
+
+```sh
+jq '.workflow, .compaction_events, .final_answer' session-case-3-replay.json
+```
+
+A non-Python implementation should reproduce the same replay sequence and assertions. The fixed tool calls are, in order: schema inspection; Phase 1 parsers `naive`, `currency_cleaned`, `null_cleaned`, `robust`; Phase 2 calls `(false,false)`, `(false,true)`, `(true,true)`; Phase 3 reports `(false,true)`, `(true,false)`, `(true,true)`; and final audit validation. It must preserve the original goal, retain workflow evidence outside compactable raw history, perform at least three hybrid compactions, retain lessons for currency, `NULL`, semicolon corruption, `UNKNOWN` salary values, and case-insensitive cities, reach `active_phase: null`, and emit the final Phase 3 markdown table.
+
+## Test Case 4 — Persisted interrupted Case 3 resume
+
+This is the recommended persistence regression: start Case 3, stop at a bounded run limit after Phase 1 has evidence, reload it through a fresh repository/engine (simulating an API restart), and finish it. It verifies the persisted memory, compaction ledger, workflow evidence, configuration snapshot, and step counter rather than only a saved JSON export.
+
+The following is a complete live-API walkthrough. It deliberately uses seven steps for the first run: that is enough for Case 3 to finish Phase 1, while leaving the session non-terminal in Phase 2. Run these commands from the repository root in one terminal. Keep the `SESSION_ID` value; it is the same ID used after the server restart.
+
+First ensure the deterministic fixture exists and start the API without `--reload` so the restart boundary is unambiguous:
+
+```sh
+uv run --project agent-python python agent-python/scripts/generate_fixtures.py
+uv run --project agent-python uvicorn agent_python.api:app --app-dir agent-python/src
+```
+
+In a second terminal, create a Case 3 session. This is the same goal used by the deterministic replay:
+
+```sh
+cd /Users/msb/Code/state-driven-agent
+export SESSION_ID=$(curl -sS -X POST http://127.0.0.1:8000/sessions \
+  -H 'content-type: application/json' \
+  -d '{"config_ref":"test-case-3.yaml","user_prompt":"Perform a complete 3-Phase Financial Audit on the provided employee dataset:\n\nPhase 1: Identify all rows with corrupted age or salary fields. Log their IDs.\nPhase 2: Normalize the salary field to a standard float. Calculate the exact median salary for valid employees living in New York (case-insensitive).\nPhase 3: Output a clean, final markdown table breaking down the total valid headcount and average age per unique city.\n\nYou must execute your steps incrementally. Do not try to solve all phases in a single script."}' \
+  | jq -r '.session.id')
+printf 'SESSION_ID=%s\n' "$SESSION_ID"
+printf '%s\n' "$SESSION_ID" > /tmp/state-driven-case-4-session-id
+```
+
+Run exactly seven bounded steps and inspect the durable state:
+
+```sh
+curl -N -X POST "http://127.0.0.1:8000/sessions/${SESSION_ID}/run/stream" \
+  -H 'content-type: application/json' -d '{"max_steps":7}'
+curl -sS "http://127.0.0.1:8000/sessions/${SESSION_ID}" | \
+  jq '{status, step_count, config_ref, config_sha256, active_phase: .workflow.active_phase, completed_phases: .workflow.completed_phases, compactions: (.compaction_events | length)}'
+```
+
+The inspection should show `status: "failed"` because the intentionally small bound was reached, `step_count: 7`, `completed_phases: ["phase_1_corruption_audit"]`, and `active_phase: "phase_2_salary_median"`. This is an expected recoverable stop, not a data-loss failure. The stream also demonstrates the SSE `status`, `interim_result`, and setup events.
+
+Now stop the API process with `Ctrl-C`. Start it again using the same command. Do not create a new session. In the second terminal, restore the ID if needed and confirm that PostgreSQL, rather than the old Python process, supplies the state:
+
+```sh
+export SESSION_ID=$(cat /tmp/state-driven-case-4-session-id)
+curl -sS "http://127.0.0.1:8000/sessions/${SESSION_ID}" | \
+  jq '{status, step_count, config_ref, config_sha256, active_phase: .workflow.active_phase, completed_phases: .workflow.completed_phases, memory_messages: (.memory | length), compactions: (.compaction_events | length)}'
+```
+
+Finally resume that same ID. The endpoint reactivates the failed session, restores its immutable config and workflow evidence, performs any needed compaction, and continues from Phase 2:
+
+```sh
+curl -N -X POST "http://127.0.0.1:8000/sessions/${SESSION_ID}/resume" \
+  -H 'content-type: application/json' -d '{"max_steps":30}'
+curl -sS "http://127.0.0.1:8000/sessions/${SESSION_ID}" | \
+  jq '{status, step_count, run_count, active_phase: .workflow.active_phase, completed_phases: .workflow.completed_phases, compactions: (.compaction_events | length), final_answer}'
+```
+
+The final inspection should show `status: "complete"`, `active_phase: null`, all three completed phase IDs, and the Phase 3 markdown report. The `config_sha256`, original goal, prior memory, and compaction events remain associated with the same session ID. For a no-network deterministic check of the same persistence boundary, run `uv run --project agent-python python agent-python/scripts/verify_test_case_4.py`; it performs the interrupted run, fresh repository reload, resume, and assertions automatically.
+
+## Test Case 5 — Resume a completed session with a new turn
+
+Case 5 proves the requested completed-session behavior. It first completes Case 3, persists it, reloads it, appends a new user turn during resume, and runs again while retaining the whole prior conversation and immutable workflow/config state.
+
+The following commands perform the live API test from start to finish. Use a separate session ID from Case 4. If the API is already running, keep it running; otherwise start it in one terminal and run the remaining commands in a second terminal.
+
+```sh
+cd /Users/msb/Code/state-driven-agent
+uv run --project agent-python python agent-python/scripts/generate_fixtures.py
+uv run --project agent-python uvicorn agent_python.api:app --app-dir agent-python/src
+```
+
+In the second terminal, create a fresh Case 3 session and save its ID:
+
+```sh
+cd /Users/msb/Code/state-driven-agent
+export CASE5_SESSION_ID=$(curl -sS -X POST http://127.0.0.1:8000/sessions \
+  -H 'content-type: application/json' \
+  -d '{"config_ref":"test-case-3.yaml","user_prompt":"Perform a complete 3-Phase Financial Audit on the provided employee dataset:\n\nPhase 1: Identify all rows with corrupted age or salary fields. Log their IDs.\nPhase 2: Normalize the salary field to a standard float. Calculate the exact median salary for valid employees living in New York (case-insensitive).\nPhase 3: Output a clean, final markdown table breaking down the total valid headcount and average age per unique city.\n\nYou must execute your steps incrementally. Do not try to solve all phases in a single script."}' \
+  | jq -r '.session.id')
+printf 'CASE5_SESSION_ID=%s\n' "$CASE5_SESSION_ID"
+printf '%s\n' "$CASE5_SESSION_ID" > /tmp/state-driven-case-5-session-id
+```
+
+Run the session with the normal JSON endpoint. Use a generous bound so the three workflow phases can finish:
+
+```sh
+curl -sS -X POST "http://127.0.0.1:8000/sessions/${CASE5_SESSION_ID}/run" \
+  -H 'content-type: application/json' -d '{"max_steps":30}' | tee /tmp/state-driven-case-5-initial-run.json | jq
+```
+
+Confirm that the first run is actually complete before attempting the completed-session resume:
+
+```sh
+curl -sS "http://127.0.0.1:8000/sessions/${CASE5_SESSION_ID}" | \
+  jq '{id, status, step_count, run_count, active_phase: .workflow.active_phase, completed_phases: .workflow.completed_phases, config_ref, config_sha256, memory_messages: (.memory | length), compactions: (.compaction_events | length), final_answer}'
+```
+
+The required precondition for Case 5 is `status: "complete"`, `active_phase: null`, all three phase IDs in `completed_phases`, and a non-null `final_answer`. If it is `failed`, inspect the model/API error and rerun the same `/run` request with a larger bound before proceeding; `/resume` is also able to recover a failed session, but that would test Case 4 semantics instead.
+
+To prove that the completed state is durable, optionally stop the API with `Ctrl-C`, start it again with the same command, and reload the saved ID:
+
+```sh
+export CASE5_SESSION_ID=$(cat /tmp/state-driven-case-5-session-id)
+curl -sS "http://127.0.0.1:8000/sessions/${CASE5_SESSION_ID}" | \
+  jq '{id, status, step_count, run_count, active_phase: .workflow.active_phase, completed_phases: .workflow.completed_phases, final_answer}'
+```
+
+Now invoke the new resume API with a new user turn. `-N` keeps the SSE events visible as each phase/tool milestone is persisted and emitted:
+
+```sh
+curl -N -X POST "http://127.0.0.1:8000/sessions/${CASE5_SESSION_ID}/resume" \
+  -H 'content-type: application/json' \
+  -d '{"content":"Briefly restate the validated final report.","max_steps":4}' \
+  | tee /tmp/state-driven-case-5-resume-events.txt
+```
+
+Finally verify that the same session ID now has a second run, the new user message, preserved workflow evidence, and a new final answer:
+
+```sh
+curl -sS "http://127.0.0.1:8000/sessions/${CASE5_SESSION_ID}" | \
+  jq '{id, status, step_count, run_count, active_phase: .workflow.active_phase, completed_phases: .workflow.completed_phases, last_messages: .memory[-3:], final_answer}'
+```
+
+Expected results are `status: "complete"`, `run_count: 2`, `active_phase: null`, the original three completed phases, and a `last_messages` entry containing the new user request followed by the assistant response. The response stream should contain `status`, `interim_result` (where applicable), `final_result`, and a terminal status event. If you only want to inspect the stream without saving it, omit the final `tee` command.
+
+```sh
+uv run --project agent-python python agent-python/scripts/verify_test_case_5.py
+```
+
+`content` is optional. Without it, the model receives the restored state and is asked to continue from where it stopped; with it, the new message is appended before compaction and the next model decision. Both `/run/stream` and `/resume` use `text/event-stream`; clients should render `status`, `interim_result`, `final_result`, and recoverable `error` events as they arrive. Add this to a selected YAML profile for optional setup detail:
+
+```yaml
+output:
+  verbose_setup: true
+```
+
+## Portability contract
+
+A Go, Rust, Java, or TypeScript implementation should preserve these observable contracts:
+
+- resolve a trusted immutable config reference at session creation and store its content hash;
+- preserve the original goal and recent raw buffer during compaction;
+- keep workflow state, observed evidence, and transition history outside compactable raw memory;
+- serialize tool failures as context data;
+- permit final completion only after the configured workflow reaches `complete`; and
+- apply a finite step limit to stalled sessions.

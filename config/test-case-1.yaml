@@ -1,3 +1,4 @@
+# Immutable Test Case 1 workflow profile. Select with config_ref: "test-case-1.yaml".
 # This file is language-neutral: only YAML, JSON-compatible values, and tool metadata.
 agent:
   name: state-driven-data-analyst
@@ -16,6 +17,22 @@ agent:
     max_tokens: 6000
     max_steps: 12
     raw_turns_to_keep: 3
+    hybrid_reflection: true
+  # A one-phase workflow preserves this case's existing validator-gated result.
+  workflow:
+    entry_phase: identify_500_ips
+    phases:
+      - id: identify_500_ips
+        name: Identify HTTP 500 IPs
+        instruction: Inspect and safely parse the log, then validate the proposed top IP and count.
+        allowed_tools: [inspect_log, analyze_500_ips, validate_top_offending_ip]
+        completion:
+          - description: The top-offending-IP validator has confirmed the result.
+            tool: validate_top_offending_ip
+            result: {valid: true}
+        transitions:
+          - to: complete
+            when: phase_complete
   tools:
     - name: inspect_log
       description: Return a bounded excerpt of the simulated HTTP access log. Use this before forming a parsing strategy.
@@ -40,23 +57,3 @@ agent:
           ip: {type: string, description: Proposed IPv4 address}
           count: {type: integer, description: Proposed number of 500 responses}
         required: [ip, count]
-
-# Test Case 2 is deliberately disabled while Test Case 1 is vetted. To enable it,
-# copy the following tool definitions into `tools` (or use config/test-case-2.yaml).
-# - name: inspect_sql_schema
-#   description: Return the Customers and Orders schema and useful data-quality examples.
-#   parameters: {type: object, properties: {}, required: []}
-# - name: query_chicago_q1_revenue
-#   description: Calculate Chicago Q1 revenue. Set normalize_keys and normalize_city after inspecting failures.
-#   parameters:
-#     type: object
-#     properties:
-#       normalize_keys: {type: boolean}
-#       normalize_city: {type: boolean}
-#     required: [normalize_keys, normalize_city]
-# - name: validate_chicago_q1_revenue
-#   description: Validate a proposed Chicago Q1 total revenue.
-#   parameters:
-#     type: object
-#     properties: {total: {type: number}}
-#     required: [total]
