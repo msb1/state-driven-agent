@@ -206,7 +206,9 @@ func (e Engine) allowed(s *Session, name string) bool {
 	}
 	p := e.phase(*s.Workflow.ActivePhase)
 	a := p.AllowedTools
-	if len(a) == 0 {
+	// An omitted allow-list falls back to completion tools, as in the Python
+	// implementation. An explicitly empty list deliberately allows no tools.
+	if a == nil {
 		for _, x := range p.Completion {
 			a = append(a, x.Tool)
 		}
@@ -360,7 +362,8 @@ func (e Engine) compact(ctx context.Context, s *Session, emit Emit) error {
 		}
 	}
 	k := e.Config.Memory.RawTurnsToKeep
-	if tokens < e.Config.Memory.MaxTokens || len(s.Memory) <= k+1 {
+	due := tokens >= e.Config.Memory.MaxTokens || s.StepCount >= e.Config.Memory.MaxSteps
+	if !due || len(s.Memory) <= k+1 {
 		return nil
 	}
 	cut := len(s.Memory) - k

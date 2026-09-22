@@ -445,7 +445,8 @@ impl Engine {
             .map(|m| (m.content.as_deref().unwrap_or("").len() / 4 + 1) as i64)
             .sum();
         let k = self.config.memory.raw_turns_to_keep;
-        if n < self.config.memory.max_tokens || s.memory.len() <= k + 1 {
+        let due = n >= self.config.memory.max_tokens || s.step_count >= self.config.memory.max_steps;
+        if !due || s.memory.len() <= k + 1 {
             return Ok(false);
         }
         let cut = s.memory.len() - k;
@@ -470,15 +471,15 @@ impl Engine {
         &self,
         goal: &str,
         h: &[Message],
-        _old: Option<&str>,
+        old: Option<&str>,
         hybrid: bool,
     ) -> String {
-        let fallback = format!(
+        let fallback = if hybrid { format!(
             "<COMPACTED_STATE>\n<USER_GOAL>\n{goal}\n</USER_GOAL>\n<GLOBAL_LESSON_LEDGER>\n- No verified global lessons extracted.\n</GLOBAL_LESSON_LEDGER>\n<DEAD_ENDS>\n- No verified dead ends extracted; inspect the retained raw working buffer.\n</DEAD_ENDS>\n<CURRENT_LOCAL_PIVOT>\nReview the retained raw working buffer and continue from the latest verified state.\n</CURRENT_LOCAL_PIVOT>\n</COMPACTED_STATE>"
-        );
+        ) } else { format!("- Core Objective: {goal}\n- Universal Truths Discovered: none verified\n- Dead Ends: none verified\n- Current Local Pivot: Review retained raw turns.") };
         let source = h
             .iter()
-            .map(|m| format!("{}: {}", m.role, m.content.clone().unwrap_or_default()))
+            .map(|m| format!("{}: {}", m.role, m.content.clone().unwrap_or_else(|| m.tool_calls.as_ref().map(Value::to_string).unwrap_or_default())))
             .collect::<Vec<_>>()
             .join("\n");
         let url = format!(
@@ -486,11 +487,12 @@ impl Engine {
             self.config.llm.base_url.trim_end_matches('/')
         );
         let instruction = if hybrid {
-            "Return a <COMPACTED_STATE> with verified facts only."
+            "You are the hybrid compaction and reflection engine for an autonomous agent. Analyze the historical prefix only. The primary agent separately preserves its recent raw working buffer, so do not reproduce, summarize, truncate, or invent raw messages here. Extract durable environmental constraints and lessons as imperative operational rules. Keep dead ends precise and short. Preserve only verified facts; mark uncertainty instead of promoting guesses to rules. Return exactly this structure and no surrounding prose: <COMPACTED_STATE><USER_GOAL>Restate the original goal without changing its parameters or definitions.</USER_GOAL><GLOBAL_LESSON_LEDGER>- Imperative rules for permanent constraints or discoveries; none if no verified lessons.</GLOBAL_LESSON_LEDGER><DEAD_ENDS>- One-sentence failed approaches and why they failed; none if no verified dead ends.</DEAD_ENDS><CURRENT_LOCAL_PIVOT>State the most important active hypothesis or next operational focus in one sentence.</CURRENT_LOCAL_PIVOT></COMPACTED_STATE> The raw working buffer is retained by the primary agent outside this response."
         } else {
-            "Create a compacted context state with verified facts only."
+            "Create a compacted context state for an agent. Preserve only verified facts. Use exactly these headings: - Core Objective - Universal Truths Discovered - Dead Ends - Current Local Pivot. Do not invent facts. The original goal is protected separately. Do not include raw history."
         };
-        match self.http.post(url).json(&json!({"model":self.config.model,"temperature":0,"messages":[{"role":"system","content":instruction},{"role":"user","content":format!("Goal: {goal}\nHistorical prefix:\n{source}")}]})).send().await{Ok(r)=>r.json::<Value>().await.ok().and_then(|v|v["choices"][0]["message"]["content"].as_str().map(str::to_owned)).unwrap_or(fallback),Err(_)=>fallback}
+        let previous = old.unwrap_or("none");
+        match self.http.post(url).json(&json!({"model":self.config.model,"temperature":0,"messages":[{"role":"system","content":instruction},{"role":"user","content":format!("Goal: {goal}\nPrevious ledger: {previous}\nHistorical prefix:\n{source}")}]})).send().await{Ok(r)=>r.json::<Value>().await.ok().and_then(|v|v["choices"][0]["message"]["content"].as_str().map(str::to_owned)).unwrap_or(fallback),Err(_)=>fallback}
     }
 }
 fn msg(role: &str, content: Option<String>) -> Message {

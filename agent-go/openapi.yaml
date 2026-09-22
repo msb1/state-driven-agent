@@ -4,8 +4,8 @@ paths:
   /health: {get: {responses: {'200': {description: healthy}}}}
   /configs: {get: {responses: {'200': {description: configurations}}}}
   /sessions: {post: {responses: {'201': {description: created}, '422': {description: invalid config}}}}
-  /sessions/{id}: {get: {parameters: [{name: id, in: path, required: true, schema: {type: string}}], responses: {'200': {description: state}, '404': {description: missing}}}}
-  /sessions/{id}/messages: {post: {responses: {'200': {description: appended}, '409': {description: terminal}}}}
-  /sessions/{id}/run: {post: {responses: {'200': {description: run result}}}}
-  /sessions/{id}/run/stream: {post: {responses: {'200': {description: SSE, content: {'text/event-stream': {schema: {type: string}}}}}}}
-  /sessions/{id}/resume: {post: {responses: {'200': {description: SSE, content: {'text/event-stream': {schema: {type: string}}}}}}}
+  /sessions/{session_id}: {get: {parameters: [{name: session_id, in: path, required: true, schema: {type: string}}], responses: {'200': {description: state}, '404': {description: missing}}}}
+  /sessions/{session_id}/messages: {post: {parameters: [{name: session_id, in: path, required: true, schema: {type: string}}], responses: {'200': {description: appended}, '409': {description: terminal}}}}
+  /sessions/{session_id}/run: {post: {parameters: [{name: session_id, in: path, required: true, schema: {type: string}}], responses: {'200': {description: run result}}}}
+  /sessions/{session_id}/run/stream: {post: {parameters: [{name: session_id, in: path, required: true, schema: {type: string}}], responses: {'200': {description: SSE, content: {'text/event-stream': {schema: {type: string}}}}}}}
+  /sessions/{session_id}/resume: {post: {parameters: [{name: session_id, in: path, required: true, schema: {type: string}}], responses: {'200': {description: SSE, content: {'text/event-stream': {schema: {type: string}}}}}}}

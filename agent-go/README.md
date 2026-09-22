@@ -11,6 +11,6 @@ AGENT_CONFIG_ROOT=../config AGENT_SESSION_DATABASE_URL='postgresql://…' go run
 go build -trimpath -ldflags='-s -w' -o bin/agent-go ./cmd/server
 ```
 
-It listens on `PORT` (default `8080`). The API is described in [`openapi.yaml`](openapi.yaml), and persistence/SSE invariants are documented in [`docs/implementation.md`](docs/implementation.md).
+It listens on `PORT` (default `8080`). Swagger UI is served at `/docs` and its OpenAPI document at `/openapi.json`; the checked-in contract is [`openapi.yaml`](openapi.yaml). Persistence/SSE invariants are documented in [`docs/implementation.md`](docs/implementation.md).
 
 The server deliberately does not expose config paths outside `AGENT_CONFIG_ROOT`; `config_ref` remains relative and is hashed at session creation.

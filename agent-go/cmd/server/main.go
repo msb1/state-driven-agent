@@ -3,8 +3,7 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"github.com/google/uuid"
@@ -15,10 +14,14 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 )
+
+//go:embed openapi.yaml
+var openAPIYAML []byte
+
+const swaggerUI = `<!doctype html><html><head><meta charset="utf-8"><title>State-Driven AI Agent - Swagger UI</title><link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css"></head><body><div id="swagger-ui"></div><script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script><script>SwaggerUIBundle({url:'/openapi.json',dom_id:'#swagger-ui'})</script></body></html>`
 
 type Message struct {
 	Role       string  `json:"role"`
@@ -68,15 +71,31 @@ func main() {
 		log.Fatal(err)
 	}
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /openapi.json", openapi)
+	mux.HandleFunc("GET /docs", docs)
 	mux.HandleFunc("GET /health", s.health)
 	mux.HandleFunc("GET /configs", s.configs)
 	mux.HandleFunc("POST /sessions", s.create)
-	mux.HandleFunc("GET /sessions/{id}", s.get)
-	mux.HandleFunc("POST /sessions/{id}/messages", s.message)
-	mux.HandleFunc("POST /sessions/{id}/run", s.run)
-	mux.HandleFunc("POST /sessions/{id}/run/stream", s.stream)
-	mux.HandleFunc("POST /sessions/{id}/resume", s.resume)
+	mux.HandleFunc("GET /sessions/{session_id}", s.get)
+	mux.HandleFunc("POST /sessions/{session_id}/messages", s.message)
+	mux.HandleFunc("POST /sessions/{session_id}/run", s.run)
+	mux.HandleFunc("POST /sessions/{session_id}/run/stream", s.stream)
+	mux.HandleFunc("POST /sessions/{session_id}/resume", s.resume)
 	log.Fatal(http.ListenAndServe(":"+env("PORT", "8080"), jsonErrors(mux)))
+}
+func openapi(w http.ResponseWriter, _ *http.Request) {
+	var document any
+	if err := yaml.Unmarshal(openAPIYAML, &document); err != nil {
+		fail(w, http.StatusInternalServerError, "embedded OpenAPI document is invalid")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	reply(w, http.StatusOK, document)
+}
+func docs(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(swaggerUI))
 }
 func env(k, d string) string {
 	if v := os.Getenv(k); v != "" {
@@ -106,54 +125,50 @@ func (s *server) health(w http.ResponseWriter, r *http.Request) {
 	reply(w, 200, map[string]any{"status": "ok", "config_root": s.root, "available_configs": len(files)})
 }
 func (s *server) load(ref string) (json.RawMessage, string, error) {
-	if ref == "" || filepath.IsAbs(ref) || strings.Contains(filepath.Clean(ref), "..") {
-		return nil, "", fmt.Errorf("config_ref must be a relative YAML path")
+	snapshot, err := agent.LoadSnapshot(s.root, ref)
+	if err != nil {
+		return nil, "", err
 	}
-	b, e := os.ReadFile(filepath.Join(s.root, ref))
-	if e != nil {
-		return nil, "", e
+	available := agent.PostgresTools(s.db)
+	for _, tool := range snapshot.Config.Tools {
+		if available[tool.Name] == nil {
+			return nil, "", fmt.Errorf("config references unavailable compiled-in tools: %s", tool.Name)
+		}
 	}
-	var raw map[string]any
-	if e = yaml.Unmarshal(b, &raw); e != nil {
-		return nil, "", e
-	}
-	a, ok := raw["agent"]
-	if !ok {
-		return nil, "", fmt.Errorf("missing agent mapping")
-	}
-	j, e := json.Marshal(a)
-	sum := sha256.Sum256(b)
-	return j, hex.EncodeToString(sum[:]), e
+	encoded, err := json.Marshal(snapshot.Config)
+	return encoded, snapshot.SHA256, err
 }
 func (s *server) configs(w http.ResponseWriter, r *http.Request) {
-	paths, _ := filepath.Glob(filepath.Join(s.root, "*.yaml"))
 	out := []any{}
-	for _, p := range paths {
-		ref := filepath.Base(p)
-		c, h, e := s.load(ref)
-		if e != nil {
-			continue
+	_ = filepath.WalkDir(s.root, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil || entry.IsDir() || (filepath.Ext(path) != ".yaml" && filepath.Ext(path) != ".yml") {
+			return nil
 		}
-		var a map[string]any
-		json.Unmarshal(c, &a)
+		ref, err := filepath.Rel(s.root, path)
+		if err != nil {
+			return nil
+		}
+		c, h, err := s.load(filepath.ToSlash(ref))
+		if err != nil {
+			return nil
+		}
+		var a agent.Config
+		if json.Unmarshal(c, &a) != nil {
+			return nil
+		}
 		tools := []string{}
-		if ts, ok := a["tools"].([]any); ok {
-			for _, v := range ts {
-				if x, ok := v.(map[string]any); ok {
-					tools = append(tools, fmt.Sprint(x["name"]))
-				}
-			}
+		for _, tool := range a.Tools {
+			tools = append(tools, tool.Name)
 		}
 		phases := []string{}
-		if wf, ok := a["workflow"].(map[string]any); ok {
-			if ps, ok := wf["phases"].([]any); ok {
-				for _, v := range ps {
-					phases = append(phases, fmt.Sprint(v.(map[string]any)["id"]))
-				}
+		if a.Workflow != nil {
+			for _, phase := range a.Workflow.Phases {
+				phases = append(phases, phase.ID)
 			}
 		}
-		out = append(out, map[string]any{"config_ref": ref, "sha256": h, "agent_name": a["name"], "tools": tools, "workflow_phases": phases, "verbose_setup": false})
-	}
+		out = append(out, map[string]any{"config_ref": filepath.ToSlash(ref), "sha256": h, "agent_name": a.Name, "tools": tools, "workflow_phases": phases, "verbose_setup": a.Output.VerboseSetup})
+		return nil
+	})
 	reply(w, 200, out)
 }
 func (s *server) create(w http.ResponseWriter, r *http.Request) {
@@ -208,7 +223,7 @@ func (s *server) save(ctx context.Context, p persisted, event any) error {
 	return e
 }
 func (s *server) get(w http.ResponseWriter, r *http.Request) {
-	p, e := s.fetch(r.Context(), r.PathValue("id"))
+	p, e := s.fetch(r.Context(), r.PathValue("session_id"))
 	if e != nil {
 		fail(w, 404, "Session not found")
 		return
@@ -216,7 +231,7 @@ func (s *server) get(w http.ResponseWriter, r *http.Request) {
 	reply(w, 200, p.State)
 }
 func (s *server) message(w http.ResponseWriter, r *http.Request) {
-	p, e := s.fetch(r.Context(), r.PathValue("id"))
+	p, e := s.fetch(r.Context(), r.PathValue("session_id"))
 	if e != nil {
 		fail(w, 404, "Session not found")
 		return
@@ -269,7 +284,7 @@ func (s *server) execute(ctx context.Context, p *persisted, max int, emit func(a
 	}
 }
 func (s *server) run(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+	id := r.PathValue("session_id")
 	lock(s, id).Lock()
 	defer lock(s, id).Unlock()
 	p, e := s.fetch(r.Context(), id)
@@ -292,7 +307,7 @@ func (s *server) run(w http.ResponseWriter, r *http.Request) {
 func (s *server) stream(w http.ResponseWriter, r *http.Request) { s.streamCommon(w, r, false) }
 func (s *server) resume(w http.ResponseWriter, r *http.Request) { s.streamCommon(w, r, true) }
 func (s *server) streamCommon(w http.ResponseWriter, r *http.Request, resume bool) {
-	id := r.PathValue("id")
+	id := r.PathValue("session_id")
 	l := lock(s, id)
 	l.Lock()
 	defer l.Unlock()
@@ -329,7 +344,10 @@ func (s *server) streamCommon(w http.ResponseWriter, r *http.Request, resume boo
 	if resume {
 		emit(map[string]any{"type": "status", "message": "Session restored from PostgreSQL; resuming agent work."})
 	}
-	emit(map[string]any{"type": "status", "message": "Agent initialized from persisted session state."})
+	var cfg agent.Config
+	if json.Unmarshal(p.Config, &cfg) == nil && cfg.Output.VerboseSetup {
+		emit(map[string]any{"type": "status", "message": "Agent initialized from persisted session state."})
+	}
 	s.execute(r.Context(), &p, q.MaxSteps, emit)
 	s.save(r.Context(), p, map[string]any{"type": "run_finished", "status": p.State.Status})
 	emit(map[string]any{"type": "status", "message": "Agent run finished.", "status": p.State.Status})

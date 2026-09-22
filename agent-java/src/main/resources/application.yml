@@ -1,5 +1,7 @@
 server:
-  port: "${PORT:8081}"
+  # The Java and Python implementations are alternatives, so they share the
+  # public API address. They are not intended to run concurrently.
+  port: "${PORT:8000}"
 spring:
   r2dbc:
     url: "${AGENT_SESSION_R2DBC_URL:r2dbc:postgresql://192.168.1.50:5432/elite_rag}"
@@ -9,3 +11,9 @@ spring:
     openai:
       base-url: "${OPENAI_BASE_URL:http://localhost:8000/v1}"
       api-key: "${OPENAI_API_KEY:local-not-required}"
+springdoc:
+  api-docs:
+    path: /openapi.json
+  swagger-ui:
+    path: /docs
+    url: /openapi.json

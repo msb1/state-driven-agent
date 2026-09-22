@@ -1,8 +1,8 @@
 # Universal State-Driven AI Agent
 
-This repository defines a framework-independent architecture for building AI agents that remain understandable, portable, and operationally testable across Python, Go, Rust, Java, TypeScript, or any language with lists, maps, and HTTP/JSON support.
+This repository contains one common, universal state-driven AI-agent design implemented in four languages: Python, Go, Rust, and Java. Each implementation preserves the same state, configuration, workflow, persistence, REST/JSON, and SSE contracts, so an agent can be understood, tested, and operated consistently across runtimes.
 
-The central idea is simple: an agent is a state machine around a mutable session-memory array. The model proposes the next structured action, the environment executes that action, and the result—success or failure—is appended to memory as data. The application owns this loop; no orchestration framework is required.
+The central idea is simple: an agent is a state machine around a mutable session-memory array. The model proposes the next structured action, the environment executes that action, and the result—success or failure—is appended to memory as data. The application owns this loop; it uses no opinionated AI-agent or orchestration framework.
 
 ## Definition
 
@@ -71,7 +71,7 @@ while session_is_active:
 
 ## Why this pattern is production-friendly
 
-- **No framework lock-in:** the durable contract is ordinary data and HTTP, so the loop can be reimplemented in another language without migrating an agent framework.
+- **No opinionated agent framework:** the durable contract is ordinary data and HTTP, so the loop can be reimplemented in Python, Go, Rust, or Java without migrating an agent framework.
 - **Error isolation:** a tool failure becomes a tool message such as `ERROR: ...`; the model can inspect it, change strategy, and retry.
 - **Separation of concerns:** the loop manages state and model calls; domain behavior lives in independently testable tools.
 - **Observable state:** every decision, result, failure, compaction, and final answer is represented in the session history.
@@ -98,8 +98,10 @@ This sliding splice preserves both foundational intent and high-fidelity recency
 | --- | --- |
 | `config/` | Trusted immutable workflow-config repository. New YAML workflows are available to new sessions without a server restart. |
 | `.env` | Shared endpoint, model, and secret defaults (keep real credentials out of source control). |
-| `agent-python/` | Current FastAPI implementation using only standard data structures and `httpx`. |
+| `agent-python/` | Python implementation of the shared agent contract. |
+| `agent-go/` | Go implementation of the shared agent contract. |
+| `agent-rust/` | Rust implementation of the shared agent contract. |
+| `agent-java/` | Java implementation of the shared agent contract. |
 | `agent-python/docs/architect.md` | Python mapping of the universal architecture and implementation decisions. |
-| `agent-go/`, `agent-rust/`, `agent-java/` | Reserved sibling implementations that will use the same contracts. |
 
-The Python implementation includes three simulated environments: a malformed HTTP log parser, a messy multi-table revenue join, and a multi-phase HR/financial compliance audit that stress-tests workflow progression and hybrid compaction. Its FastAPI service persists sessions and immutable resolved config snapshots in PostgreSQL, and can resume completed or interrupted runs through SSE endpoints with phase-level interim events. See [the test-case runbook](test-cases.md) for the exact commands, including persistence Cases 4 and 5.
+All four implementations share the universal state-driven-agent model rather than an opinionated agent framework; they may use ordinary language-appropriate HTTP and database libraries at their service boundaries. The test environments include a malformed HTTP log parser, a messy multi-table revenue join, and a multi-phase HR/financial compliance audit that stress-tests workflow progression and hybrid compaction. See [the test-case runbook](test-cases.md) for exact commands and persistence cases.

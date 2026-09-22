@@ -1,0 +1,80 @@
+openapi: 3.1.0
+info:
+  title: State-Driven AI Agent
+  version: 0.2.0
+paths:
+  /health:
+    get:
+      summary: Health
+      responses: {'200': {description: Successful Response}}
+  /configs:
+    get:
+      summary: List Configs
+      responses: {'200': {description: Successful Response}}
+  /sessions:
+    post:
+      summary: Create Session
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/CreateSessionRequest'}}}
+      responses: {'201': {description: Successful Response}, '422': {description: Validation Error}}
+  /sessions/{session_id}:
+    get:
+      summary: Get Session
+      parameters: [{name: session_id, in: path, required: true, schema: {type: string}}]
+      responses: {'200': {description: Successful Response}, '404': {description: Not Found}}
+  /sessions/{session_id}/messages:
+    post:
+      summary: Append User Message
+      parameters: [{name: session_id, in: path, required: true, schema: {type: string}}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/AppendUserMessageRequest'}}}
+      responses: {'200': {description: Successful Response}, '404': {description: Not Found}, '409': {description: Conflict}, '422': {description: Validation Error}}
+  /sessions/{session_id}/run:
+    post:
+      summary: Run Session
+      parameters: [{name: session_id, in: path, required: true, schema: {type: string}}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/RunRequest'}}}
+      responses: {'200': {description: Successful Response}, '404': {description: Not Found}}
+  /sessions/{session_id}/run/stream:
+    post:
+      summary: Stream Run Session
+      parameters: [{name: session_id, in: path, required: true, schema: {type: string}}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/RunRequest'}}}
+      responses: {'200': {description: Successful Response, content: {text/event-stream: {schema: {type: string}}}}, '404': {description: Not Found}, '409': {description: Conflict}}
+  /sessions/{session_id}/resume:
+    post:
+      summary: Resume Session
+      parameters: [{name: session_id, in: path, required: true, schema: {type: string}}]
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: '#/components/schemas/ResumeSessionRequest'}}}
+      responses: {'200': {description: Successful Response, content: {text/event-stream: {schema: {type: string}}}}, '404': {description: Not Found}}
+components:
+  schemas:
+    CreateSessionRequest:
+      type: object
+      required: [user_prompt]
+      properties:
+        user_prompt: {type: string, minLength: 1, description: The user's goal; becomes the first session-memory message.}
+        config_ref: {type: string, minLength: 1, default: test-case-1.yaml, description: Relative YAML path inside the server-approved config repository.}
+    AppendUserMessageRequest:
+      type: object
+      required: [content]
+      properties:
+        content: {type: string, minLength: 1, description: Additional user input appended to the active session memory.}
+    RunRequest:
+      type: object
+      properties:
+        max_steps: {anyOf: [{type: integer, minimum: 1, maximum: 50}, {type: 'null'}]}
+    ResumeSessionRequest:
+      allOf:
+        - {$ref: '#/components/schemas/RunRequest'}
+        - type: object
+          properties:
+            content: {anyOf: [{type: string, minLength: 1}, {type: 'null'}]}

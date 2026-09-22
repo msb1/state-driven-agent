@@ -50,9 +50,9 @@ func (c OpenAIClient) Decide(ctx context.Context, m []Message) (Decision, error)
 	return Decision{ID: defaultString(x.ToolCalls[0].ID, "call_1"), Name: x.ToolCalls[0].Function.Name, Arguments: a}, nil
 }
 func (c OpenAIClient) Compact(ctx context.Context, goal string, h []Message, old *string, hybrid bool) (string, error) {
-	prompt := "Create a compacted context state with verified facts only."
+	prompt := "Create a compacted context state for an agent. Preserve only verified facts. Use exactly these headings: - Core Objective - Universal Truths Discovered - Dead Ends - Current Local Pivot. Do not invent facts. The original goal is protected separately. Do not include raw history."
 	if hybrid {
-		prompt = "Return a <COMPACTED_STATE> with a <GLOBAL_LESSON_LEDGER>; preserve verified lessons about failures."
+		prompt = "You are the hybrid compaction and reflection engine for an autonomous agent. Analyze the historical prefix only. The primary agent separately preserves its recent raw working buffer, so do not reproduce, summarize, truncate, or invent raw messages here. Extract durable environmental constraints and lessons as imperative operational rules. Keep dead ends precise and short. Preserve only verified facts; mark uncertainty instead of promoting guesses to rules. Return exactly this structure and no surrounding prose: <COMPACTED_STATE><USER_GOAL>Restate the original goal without changing its parameters or definitions.</USER_GOAL><GLOBAL_LESSON_LEDGER>- Imperative rules for permanent constraints or discoveries; none if no verified lessons.</GLOBAL_LESSON_LEDGER><DEAD_ENDS>- One-sentence failed approaches and why they failed; none if no verified dead ends.</DEAD_ENDS><CURRENT_LOCAL_PIVOT>State the most important active hypothesis or next operational focus in one sentence.</CURRENT_LOCAL_PIVOT></COMPACTED_STATE> The raw working buffer is retained by the primary agent outside this response."
 	}
 	r := struct {
 		Choices []struct {
@@ -61,11 +61,21 @@ func (c OpenAIClient) Compact(ctx context.Context, goal string, h []Message, old
 			} `json:"message"`
 		} `json:"choices"`
 	}{}
-	err := c.post(ctx, map[string]any{"model": c.Config.Model, "temperature": 0, "messages": []Message{{Role: "system", Content: &prompt}, {Role: "user", Content: str("Goal: " + goal + "\nHistorical prefix: " + fmt.Sprint(h))}}}, &r)
+	previous := "none"
+	if old != nil {
+		previous = *old
+	}
+	err := c.post(ctx, map[string]any{"model": c.Config.Model, "temperature": 0, "messages": []Message{{Role: "system", Content: &prompt}, {Role: "user", Content: str("Goal: " + goal + "\nPrevious ledger: " + previous + "\nHistorical prefix:\n" + fmt.Sprint(h))}}}, &r)
 	if err != nil || len(r.Choices) == 0 {
-		return "<COMPACTED_STATE>\n<USER_GOAL>\n" + goal + "\n</USER_GOAL>\n<GLOBAL_LESSON_LEDGER>\n- Preserve verified tool results.\n</GLOBAL_LESSON_LEDGER>\n</COMPACTED_STATE>", nil
+		if hybrid {
+			return hybridFallback(goal), nil
+		}
+		return "- Core Objective: " + goal + "\n- Universal Truths Discovered: none verified\n- Dead Ends: none verified\n- Current Local Pivot: Review retained raw turns.", nil
 	}
 	return r.Choices[0].Message.Content, nil
+}
+func hybridFallback(goal string) string {
+	return "<COMPACTED_STATE>\n<USER_GOAL>\n" + goal + "\n</USER_GOAL>\n<GLOBAL_LESSON_LEDGER>\n- No verified global lessons extracted.\n</GLOBAL_LESSON_LEDGER>\n<DEAD_ENDS>\n- No verified dead ends extracted; inspect the retained raw working buffer.\n</DEAD_ENDS>\n<CURRENT_LOCAL_PIVOT>\nReview the retained raw working buffer and continue from the latest verified state.\n</CURRENT_LOCAL_PIVOT>\n</COMPACTED_STATE>"
 }
 func (c OpenAIClient) post(ctx context.Context, p any, out any) error {
 	b, _ := json.Marshal(p)

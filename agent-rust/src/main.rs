@@ -36,6 +36,8 @@ async fn main() {
     sqlx::query("CREATE TABLE IF NOT EXISTS agent_sessions (session_id UUID PRIMARY KEY,state JSONB NOT NULL,config JSONB NOT NULL,config_ref TEXT,config_sha256 TEXT,created_at TIMESTAMPTZ NOT NULL DEFAULT now(),updated_at TIMESTAMPTZ NOT NULL DEFAULT now()); CREATE TABLE IF NOT EXISTS agent_session_events(event_id BIGSERIAL PRIMARY KEY,session_id UUID NOT NULL REFERENCES agent_sessions(session_id) ON DELETE CASCADE,event JSONB NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT now()); CREATE INDEX IF NOT EXISTS agent_session_events_session_id_idx ON agent_session_events(session_id,event_id)").execute(&db).await.expect("schema");
     let app = Router::new()
         .route("/health", get(health))
+        .route("/openapi.json", get(openapi))
+        .route("/docs", get(docs))
         .route("/configs", get(configs))
         .route("/sessions", post(create))
         .route("/sessions/{id}", get(session))
@@ -51,11 +53,31 @@ async fn main() {
         });
     let l = tokio::net::TcpListener::bind(format!(
         "0.0.0.0:{}",
-        env::var("PORT").unwrap_or_else(|_| "8082".into())
+        env::var("PORT").unwrap_or_else(|_| "8000".into())
     ))
     .await
     .unwrap();
     axum::serve(l, app).await.unwrap()
+}
+/// The shared REST contract.  Keeping the document alongside the other
+/// implementations makes the interactive Swagger UI interchangeable with
+/// FastAPI's `/docs` endpoint.
+async fn openapi() -> Json<Value> {
+    Json(
+        serde_yaml::from_str(include_str!("../../agent-go/openapi.yaml"))
+            .expect("the checked-in OpenAPI document must be valid YAML"),
+    )
+}
+async fn docs() -> impl IntoResponse {
+    (
+        [("content-type", "text/html; charset=utf-8")],
+        r#"<!doctype html><html><head><title>State-Driven AI Agent API</title>
+<link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css"></head>
+<body><div id="swagger-ui"></div>
+<script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+<script>SwaggerUIBundle({url:'/openapi.json',dom_id:'#swagger-ui'});</script>
+</body></html>"#,
+    )
 }
 async fn health(State(a): State<App>) -> Json<Value> {
     Json(
