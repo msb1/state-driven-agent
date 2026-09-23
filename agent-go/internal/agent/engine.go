@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
+	"unicode/utf8"
+
+	"gopkg.in/yaml.v3"
 )
 
 type Message struct {
@@ -42,21 +44,49 @@ type Session struct {
 	FinalAnswer      *string        `json:"final_answer,omitempty"`
 }
 type Evidence struct {
-	Description, Tool string
-	Required          bool
-	Arguments         map[string]any
-	Result            map[string]any
-	ContentContains   []string `yaml:"content_contains" json:"content_contains"`
+	Description     string         `yaml:"description" json:"description"`
+	Tool            string         `yaml:"tool" json:"tool"`
+	Required        bool           `yaml:"required" json:"required"`
+	Arguments       map[string]any `yaml:"arguments" json:"arguments"`
+	Result          map[string]any `yaml:"result" json:"result"`
+	ContentContains []string       `yaml:"content_contains" json:"content_contains"`
 }
+
+// Unspecified completion evidence is required by the shared configuration
+// contract. A pointer is needed here so an explicit required: false remains
+// distinguishable from an omitted field.
+func (e *Evidence) UnmarshalYAML(value *yaml.Node) error {
+	var v struct {
+		Description     string         `yaml:"description"`
+		Tool            string         `yaml:"tool"`
+		Required        *bool          `yaml:"required"`
+		Arguments       map[string]any `yaml:"arguments"`
+		Result          map[string]any `yaml:"result"`
+		ContentContains []string       `yaml:"content_contains"`
+	}
+	if err := value.Decode(&v); err != nil {
+		return err
+	}
+	e.Description = v.Description
+	e.Tool = v.Tool
+	e.Required = v.Required == nil || *v.Required
+	e.Arguments = v.Arguments
+	e.Result = v.Result
+	e.ContentContains = v.ContentContains
+	return nil
+}
+
 type Edge struct {
 	To, When string
 	Evidence []Evidence
 }
 type Phase struct {
-	ID, Name, Instruction string
-	AllowedTools          []string `yaml:"allowed_tools" json:"allowed_tools"`
-	Completion            []Evidence
-	Transitions           []Edge
+	ID           string     `yaml:"id" json:"id"`
+	Name         string     `yaml:"name" json:"name"`
+	Instruction  string     `yaml:"instruction" json:"instruction"`
+	AllowedTools []string   `yaml:"allowed_tools" json:"allowed_tools"`
+	Completion   []Evidence `yaml:"completion" json:"completion"`
+	Transitions  []Edge     `yaml:"transitions" json:"transitions"`
 }
 type Memory struct {
 	MaxTokens        int  `yaml:"max_tokens" json:"max_tokens"`
@@ -66,7 +96,7 @@ type Memory struct {
 }
 type WorkflowConfig struct {
 	EntryPhase string  `yaml:"entry_phase" json:"entry_phase"`
-	Phases     []Phase `json:"phases"`
+	Phases     []Phase `yaml:"phases" json:"phases"`
 }
 type Config struct {
 	Name         string           `yaml:"name" json:"name"`
@@ -357,9 +387,11 @@ func contains(a, b any) bool {
 func (e Engine) compact(ctx context.Context, s *Session, emit Emit) error {
 	tokens := 0
 	for _, m := range s.Memory {
+		content := ""
 		if m.Content != nil {
-			tokens += len(*m.Content)/4 + 1
+			content = *m.Content
 		}
+		tokens += utf8.RuneCountInString(content)/4 + 1
 	}
 	k := e.Config.Memory.RawTurnsToKeep
 	due := tokens >= e.Config.Memory.MaxTokens || s.StepCount >= e.Config.Memory.MaxSteps
@@ -374,5 +406,5 @@ func (e Engine) compact(ctx context.Context, s *Session, emit Emit) error {
 	s.CompactedContext = &v
 	s.CompactionEvents = append(s.CompactionEvents, v)
 	s.Memory = append([]Message{s.Memory[0]}, s.Memory[cut:]...)
-	return out(emit, map[string]any{"type": "interim_result", "step": "compaction", "data": map[string]any{"compaction_count": len(s.CompactionEvents)}, "at": time.Now().UTC().Format(time.RFC3339Nano)})
+	return out(emit, map[string]any{"type": "interim_result", "step": "compaction", "data": map[string]any{"compaction_count": len(s.CompactionEvents)}})
 }

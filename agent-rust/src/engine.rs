@@ -10,13 +10,9 @@ use std::env;
 #[derive(Clone, Serialize, Deserialize, Default)]
 pub struct Message {
     pub role: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Value>,
 }
 #[derive(Clone, Serialize, Deserialize, Default)]
@@ -39,24 +35,24 @@ pub struct Workflow {
 pub struct Session {
     pub id: String,
     pub goal: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub config_ref: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub config_sha256: Option<String>,
     #[serde(default)]
     pub memory: Vec<Message>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub compacted_context: Option<String>,
     #[serde(default)]
     pub compaction_events: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub workflow: Option<Workflow>,
     #[serde(default)]
     pub step_count: i64,
     #[serde(default)]
     pub run_count: i64,
     pub status: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub final_answer: Option<String>,
 }
 fn yes() -> bool {
@@ -71,10 +67,13 @@ fn timeout() -> f64 {
 fn api_key() -> String {
     "OPENAI_API_KEY".into()
 }
+fn empty_object() -> Value {
+    Value::Object(Map::new())
+}
 fn phase_complete() -> String {
     "phase_complete".into()
 }
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Memory {
     pub max_tokens: i64,
     pub max_steps: i64,
@@ -82,12 +81,12 @@ pub struct Memory {
     #[serde(default = "yes")]
     pub hybrid_reflection: bool,
 }
-#[derive(Clone, Deserialize, Default)]
+#[derive(Clone, Serialize, Deserialize, Default)]
 pub struct Output {
     #[serde(default)]
     pub verbose_setup: bool,
 }
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Llm {
     pub base_url: String,
     #[serde(default = "api_key")]
@@ -97,20 +96,20 @@ pub struct Llm {
     #[serde(default = "timeout")]
     pub timeout_seconds: f64,
 }
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Evidence {
     pub description: String,
     pub tool: String,
     #[serde(default = "yes")]
     pub required: bool,
-    #[serde(default)]
+    #[serde(default = "empty_object")]
     pub arguments: Value,
-    #[serde(default)]
+    #[serde(default = "empty_object")]
     pub result: Value,
     #[serde(default)]
     pub content_contains: Vec<String>,
 }
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Edge {
     pub to: String,
     #[serde(default = "phase_complete")]
@@ -118,7 +117,7 @@ pub struct Edge {
     #[serde(default)]
     pub evidence: Vec<Evidence>,
 }
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Phase {
     pub id: String,
     pub name: String,
@@ -130,18 +129,18 @@ pub struct Phase {
     #[serde(default)]
     pub transitions: Vec<Edge>,
 }
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct WorkflowConfig {
     pub entry_phase: String,
     pub phases: Vec<Phase>,
 }
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Tool {
     pub name: String,
     pub description: String,
     pub parameters: Value,
 }
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Config {
     pub name: String,
     pub system_prompt: String,
@@ -176,21 +175,24 @@ impl Engine {
         emit: &mut F,
     ) -> Result<(), String>
     where
-        F: FnMut(Value) -> BoxFuture<'static, Result<(), String>>,
+        F: FnMut(Value, Session) -> BoxFuture<'static, Result<(), String>>,
     {
         let cap = max.unwrap_or(self.config.memory.max_steps);
         let limit = s.step_count + cap;
         s.run_count += 1;
-        emit(json!({"type":"status","message":"Agent run started.","run_count":s.run_count}))
-            .await?;
+        emit(
+            json!({"type":"status","message":"Agent run started.","run_count":s.run_count}),
+            s.clone(),
+        )
+        .await?;
         while s.status == "active" && s.step_count < limit {
             if let Some(t) = self.advance(s) {
-                emit(json!({"type":"interim_result","step":"phase_completed","phase_id":t.from_phase,"next_phase":t.to_phase,"reason":t.reason})).await?
+                emit(json!({"type":"interim_result","step":"phase_completed","phase_id":t.from_phase,"next_phase":t.to_phase,"reason":t.reason}), s.clone()).await?
             }
             if self.compact(s).await? {
-                emit(json!({"type":"interim_result","step":"compaction","data":{"compaction_count":s.compaction_events.len()}})).await?
+                emit(json!({"type":"interim_result","step":"compaction","data":{"compaction_count":s.compaction_events.len()}}), s.clone()).await?
             }
-            emit(json!({"type":"status","message":"Agent deciding next action.","step_count":s.step_count})).await?;
+            emit(json!({"type":"status","message":"Agent deciding next action.","step_count":s.step_count}), s.clone()).await?;
             let d = self.decide(self.payload(s)).await?;
             s.step_count += 1;
             if d["type"] == "final" {
@@ -202,14 +204,14 @@ impl Engine {
                 if self.complete(s) {
                     s.status = "complete".into();
                     s.final_answer = Some(x.clone());
-                    emit(json!({"type":"final_result","answer":x})).await?
+                    emit(json!({"type":"final_result","answer":x}), s.clone()).await?
                 }
                 continue;
             }
             let id = d["id"].as_str().unwrap_or("call_1").to_owned();
             let name = d["name"].as_str().unwrap_or("").to_owned();
             let args = d["arguments"].as_object().cloned().unwrap_or_default();
-            s.memory.push(Message{role:"assistant".into(),content:None,name:None,tool_call_id:None,tool_calls:Some(json!([{"id":id.clone(),"type":"function","function":{"name":name.clone(),"arguments":Value::Object(args.clone()).to_string()}}]))});
+            s.memory.push(Message{role:"assistant".into(),content:None,name:None,tool_call_id:None,tool_calls:Some(json!([{"id":id.clone(),"type":"function","function":{"name":name.clone(),"arguments":crate::tools::python_json_dumps(&Value::Object(args.clone()))}}]))});
             let out = if self.allowed(s, &name) {
                 tools::execute(db, &name, args.clone()).await
             } else {
@@ -231,7 +233,7 @@ impl Engine {
                 tool_calls: None,
             });
             self.record(s, &name, args, &out);
-            emit(json!({"type":"interim_result","step":"tool_completed","data":{"tool":name,"output":out}})).await?
+            emit(json!({"type":"interim_result","step":"tool_completed","data":{"tool":name,"output":out}}), s.clone()).await?
         }
         if s.status == "active" && s.step_count >= limit {
             let x = format!(
@@ -239,7 +241,11 @@ impl Engine {
             );
             s.status = "failed".into();
             s.final_answer = Some(x.clone());
-            emit(json!({"type":"error","message":x,"recoverable":true})).await?
+            emit(
+                json!({"type":"error","message":x,"recoverable":true}),
+                s.clone(),
+            )
+            .await?
         }
         Ok(())
     }
@@ -305,13 +311,21 @@ impl Engine {
         let Some(p) = self.phase(id) else {
             return vec![];
         };
-        p.allowed_tools
+        let mut names = p
+            .allowed_tools
             .clone()
-            .unwrap_or_else(|| p.completion.iter().map(|e| e.tool.clone()).collect())
+            .unwrap_or_else(|| p.completion.iter().map(|e| e.tool.clone()).collect());
+        names.sort();
+        names.dedup();
+        names
     }
     fn allowed(&self, s: &Session, name: &str) -> bool {
-        let a = self.allowed_names(s);
-        a.is_empty() || a.iter().any(|x| x == name)
+        if self.config.workflow.is_none()
+            || s.workflow.as_ref().is_none_or(|w| w.active_phase.is_none())
+        {
+            return true;
+        }
+        self.allowed_names(s).iter().any(|x| x == name)
     }
     fn missing(&self, s: &Session, p: &Phase) -> Vec<String> {
         p.completion
@@ -327,6 +341,13 @@ impl Engine {
             .collect()
     }
     fn advance(&self, s: &mut Session) -> Option<Transition> {
+        self.config.workflow.as_ref()?;
+        if s.workflow.is_none() {
+            s.workflow = self.config.workflow.as_ref().map(|w| Workflow {
+                active_phase: Some(w.entry_phase.clone()),
+                ..Default::default()
+            });
+        }
         let id = s.workflow.as_ref()?.active_phase.clone()?;
         let p = self.phase(&id)?;
         let e = p
@@ -386,55 +407,88 @@ impl Engine {
         }
     }
     async fn decide(&self, m: Vec<Message>) -> Result<Value, String> {
-        let base = self.config.llm.base_url.trim_end_matches('/');
-        let mut urls = vec![if base.ends_with("/chat/completions") {
-            base.into()
-        } else {
-            format!("{base}/chat/completions")
-        }];
-        if base.ends_with("/v1") {
-            urls.push(format!("{}/chat/completions", &base[..base.len() - 3]))
+        let messages: Vec<Value> = m
+            .into_iter()
+            .map(|message| {
+                let mut value = serde_json::to_value(message).unwrap();
+                if let Some(object) = value.as_object_mut() {
+                    object.retain(|_, v| !v.is_null());
+                }
+                value
+            })
+            .collect();
+        let b = json!({"model":self.config.model,"messages":messages,"tools":self.config.tools.iter().map(|t|json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.parameters}})).collect::<Vec<_>>(),"tool_choice":"auto","temperature":self.config.llm.temperature});
+        let v = self.post_chat(&b).await?;
+        {
+            let x = v
+                .get("choices")
+                .and_then(Value::as_array)
+                .and_then(|a| a.first())
+                .and_then(|c| c.get("message"))
+                .ok_or("invalid model response: choices[0].message is missing")?;
+            if let Some(c) = x["tool_calls"].as_array().and_then(|a| a.first()) {
+                let function = c
+                    .get("function")
+                    .ok_or("invalid model response: tool call function is missing")?;
+                let argument_text = function
+                    .get("arguments")
+                    .and_then(Value::as_str)
+                    .ok_or("invalid model response: tool call arguments must be a string")?;
+                let name = function
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .ok_or("invalid model response: tool call name is missing")?;
+                return Ok(match serde_json::from_str::<Value>(argument_text) {
+                    Ok(a) => {
+                        json!({"type":"tool","id":c.get("id").and_then(Value::as_str).unwrap_or("call_1"),"name":name,"arguments":a})
+                    }
+                    Err(e) => {
+                        json!({"type":"final","content":format!("LLM emitted invalid tool arguments: {e}")})
+                    }
+                });
+            }
+            Ok(
+                json!({"type":"final","content":x["content"].as_str().unwrap_or("No final answer was returned.")}),
+            )
         }
-        let b = json!({"model":self.config.model,"messages":m,"tools":self.config.tools.iter().map(|t|json!({"type":"function","function":{"name":t.name,"description":t.description,"parameters":t.parameters}})).collect::<Vec<_>>(),"tool_choice":"auto","temperature":self.config.llm.temperature});
-        for (i, u) in urls.iter().enumerate() {
-            let r = self
+    }
+
+    fn completion_urls(&self) -> Vec<String> {
+        let base = self.config.llm.base_url.trim_end_matches('/');
+        let suffix = "/chat/completions";
+        if base.ends_with(suffix) {
+            return vec![base.to_owned()];
+        }
+        let primary = format!("{base}{suffix}");
+        if let Some(root) = base.strip_suffix("/v1") {
+            vec![primary, format!("{root}{suffix}")]
+        } else {
+            vec![primary]
+        }
+    }
+
+    async fn post_chat(&self, payload: &Value) -> Result<Value, String> {
+        let urls = self.completion_urls();
+        let token =
+            env::var(&self.config.llm.api_key_env).unwrap_or_else(|_| "local-not-required".into());
+        for (index, url) in urls.iter().enumerate() {
+            let response = self
                 .http
-                .post(u)
-                .bearer_auth(
-                    env::var(&self.config.llm.api_key_env)
-                        .unwrap_or_else(|_| "local-not-required".into()),
-                )
-                .json(&b)
+                .post(url)
+                .bearer_auth(&token)
+                .json(payload)
                 .send()
                 .await
                 .map_err(|e| e.to_string())?;
-            if r.status() == StatusCode::NOT_FOUND && i + 1 < urls.len() {
+            if response.status() == StatusCode::NOT_FOUND && index + 1 < urls.len() {
                 continue;
             }
-            let v = r
+            return response
                 .error_for_status()
                 .map_err(|e| e.to_string())?
                 .json::<Value>()
                 .await
-                .map_err(|e| e.to_string())?;
-            let x = &v["choices"][0]["message"];
-            if let Some(c) = x["tool_calls"].as_array().and_then(|a| a.first()) {
-                return Ok(
-                    match serde_json::from_str::<Value>(
-                        c["function"]["arguments"].as_str().unwrap_or("{}"),
-                    ) {
-                        Ok(a) => {
-                            json!({"type":"tool","id":c["id"].as_str().unwrap_or("call_1"),"name":c["function"]["name"],"arguments":a})
-                        }
-                        Err(e) => {
-                            json!({"type":"final","content":format!("LLM emitted invalid tool arguments: {e}")})
-                        }
-                    },
-                );
-            }
-            return Ok(
-                json!({"type":"final","content":x["content"].as_str().unwrap_or("No final answer was returned.")}),
-            );
+                .map_err(|e| e.to_string());
         }
         Err("model completion route unavailable".into())
     }
@@ -445,7 +499,8 @@ impl Engine {
             .map(|m| (m.content.as_deref().unwrap_or("").len() / 4 + 1) as i64)
             .sum();
         let k = self.config.memory.raw_turns_to_keep;
-        let due = n >= self.config.memory.max_tokens || s.step_count >= self.config.memory.max_steps;
+        let due =
+            n >= self.config.memory.max_tokens || s.step_count >= self.config.memory.max_steps;
         if !due || s.memory.len() <= k + 1 {
             return Ok(false);
         }
@@ -474,25 +529,70 @@ impl Engine {
         old: Option<&str>,
         hybrid: bool,
     ) -> String {
-        let fallback = if hybrid { format!(
-            "<COMPACTED_STATE>\n<USER_GOAL>\n{goal}\n</USER_GOAL>\n<GLOBAL_LESSON_LEDGER>\n- No verified global lessons extracted.\n</GLOBAL_LESSON_LEDGER>\n<DEAD_ENDS>\n- No verified dead ends extracted; inspect the retained raw working buffer.\n</DEAD_ENDS>\n<CURRENT_LOCAL_PIVOT>\nReview the retained raw working buffer and continue from the latest verified state.\n</CURRENT_LOCAL_PIVOT>\n</COMPACTED_STATE>"
-        ) } else { format!("- Core Objective: {goal}\n- Universal Truths Discovered: none verified\n- Dead Ends: none verified\n- Current Local Pivot: Review retained raw turns.") };
+        let fallback = if hybrid {
+            format!(
+                "<COMPACTED_STATE>\n<USER_GOAL>\n{goal}\n</USER_GOAL>\n<GLOBAL_LESSON_LEDGER>\n- No verified global lessons extracted.\n</GLOBAL_LESSON_LEDGER>\n<DEAD_ENDS>\n- No verified dead ends extracted; inspect the retained raw working buffer.\n</DEAD_ENDS>\n<CURRENT_LOCAL_PIVOT>\nReview the retained raw working buffer and continue from the latest verified state.\n</CURRENT_LOCAL_PIVOT>\n</COMPACTED_STATE>"
+            )
+        } else {
+            let text = h
+                .iter()
+                .map(|message| {
+                    message
+                        .content
+                        .clone()
+                        .filter(|x| !x.is_empty())
+                        .or_else(|| message.tool_calls.as_ref().map(tools::python_repr))
+                        .unwrap_or_default()
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            let tail: String = text
+                .chars()
+                .rev()
+                .take(1800)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect();
+            format!(
+                "- Core Objective: {goal}\n- Universal Truths Discovered: none verified\n- Dead Ends: {tail}\n- Current Local Pivot: Review retained raw turns."
+            )
+        };
         let source = h
             .iter()
-            .map(|m| format!("{}: {}", m.role, m.content.clone().unwrap_or_else(|| m.tool_calls.as_ref().map(Value::to_string).unwrap_or_default())))
+            .map(|m| {
+                format!(
+                    "{}: {}",
+                    m.role,
+                    m.content
+                        .clone()
+                        .filter(|x| !x.is_empty())
+                        .unwrap_or_else(|| m
+                            .tool_calls
+                            .as_ref()
+                            .map(tools::python_repr)
+                            .unwrap_or_default())
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n");
-        let url = format!(
-            "{}/chat/completions",
-            self.config.llm.base_url.trim_end_matches('/')
-        );
         let instruction = if hybrid {
-            "You are the hybrid compaction and reflection engine for an autonomous agent. Analyze the historical prefix only. The primary agent separately preserves its recent raw working buffer, so do not reproduce, summarize, truncate, or invent raw messages here. Extract durable environmental constraints and lessons as imperative operational rules. Keep dead ends precise and short. Preserve only verified facts; mark uncertainty instead of promoting guesses to rules. Return exactly this structure and no surrounding prose: <COMPACTED_STATE><USER_GOAL>Restate the original goal without changing its parameters or definitions.</USER_GOAL><GLOBAL_LESSON_LEDGER>- Imperative rules for permanent constraints or discoveries; none if no verified lessons.</GLOBAL_LESSON_LEDGER><DEAD_ENDS>- One-sentence failed approaches and why they failed; none if no verified dead ends.</DEAD_ENDS><CURRENT_LOCAL_PIVOT>State the most important active hypothesis or next operational focus in one sentence.</CURRENT_LOCAL_PIVOT></COMPACTED_STATE> The raw working buffer is retained by the primary agent outside this response."
+            "You are the hybrid compaction and reflection engine for an autonomous agent.\n\nAnalyze the historical prefix only. The primary agent separately preserves its recent raw\nworking buffer, so do not reproduce, summarize, truncate, or invent raw messages here.\nExtract durable environmental constraints and lessons as imperative operational rules.\nKeep dead ends precise and short. Preserve only verified facts; mark uncertainty instead\nof promoting guesses to rules. Return exactly this structure and no surrounding prose:\n\n<COMPACTED_STATE>\n<USER_GOAL>\nRestate the original goal without changing its parameters or definitions.\n</USER_GOAL>\n<GLOBAL_LESSON_LEDGER>\n- Imperative rules for permanent constraints or discoveries; none if no verified lessons.\n</GLOBAL_LESSON_LEDGER>\n<DEAD_ENDS>\n- One-sentence failed approaches and why they failed; none if no verified dead ends.\n</DEAD_ENDS>\n<CURRENT_LOCAL_PIVOT>\nState the most important active hypothesis or next operational focus in one sentence.\n</CURRENT_LOCAL_PIVOT>\n</COMPACTED_STATE>\n\nThe raw working buffer is retained by the primary agent outside this response."
         } else {
-            "Create a compacted context state for an agent. Preserve only verified facts. Use exactly these headings: - Core Objective - Universal Truths Discovered - Dead Ends - Current Local Pivot. Do not invent facts. The original goal is protected separately. Do not include raw history."
+            "Create a compacted context state for an agent. Preserve only verified facts.\nUse exactly these headings:\n- Core Objective\n- Universal Truths Discovered\n- Dead Ends\n- Current Local Pivot\nDo not invent facts. The original goal is protected separately. Do not include raw history."
         };
-        let previous = old.unwrap_or("none");
-        match self.http.post(url).json(&json!({"model":self.config.model,"temperature":0,"messages":[{"role":"system","content":instruction},{"role":"user","content":format!("Goal: {goal}\nPrevious ledger: {previous}\nHistorical prefix:\n{source}")}]})).send().await{Ok(r)=>r.json::<Value>().await.ok().and_then(|v|v["choices"][0]["message"]["content"].as_str().map(str::to_owned)).unwrap_or(fallback),Err(_)=>fallback}
+        let previous = old.filter(|value| !value.is_empty()).unwrap_or("none");
+        let messages = json!([{"role":"system","content":instruction,"name":null,"tool_call_id":null,"tool_calls":null},{"role":"user","content":format!("Goal: {goal}\nPrevious ledger: {previous}\nHistorical prefix:\n{source}"),"name":null,"tool_call_id":null,"tool_calls":null}]);
+        self.post_chat(&json!({"model":self.config.model,"messages":messages,"temperature":0}))
+            .await
+            .ok()
+            .and_then(|v| {
+                v["choices"][0]["message"]["content"]
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .filter(|s| !s.is_empty())
+            .unwrap_or(fallback)
     }
 }
 fn msg(role: &str, content: Option<String>) -> Message {

@@ -61,6 +61,9 @@ type server struct {
 }
 
 func main() {
+	if err := loadDotEnv(); err != nil {
+		log.Fatal(err)
+	}
 	root := env("AGENT_CONFIG_ROOT", "../config")
 	db, err := pgxpool.New(context.Background(), env("AGENT_SESSION_DATABASE_URL", "postgresql://user:password@192.168.1.50:5432/elite_rag"))
 	if err != nil {
@@ -81,7 +84,7 @@ func main() {
 	mux.HandleFunc("POST /sessions/{session_id}/run", s.run)
 	mux.HandleFunc("POST /sessions/{session_id}/run/stream", s.stream)
 	mux.HandleFunc("POST /sessions/{session_id}/resume", s.resume)
-	log.Fatal(http.ListenAndServe(":"+env("PORT", "8080"), jsonErrors(mux)))
+	log.Fatal(http.ListenAndServe(":"+env("PORT", "8000"), jsonErrors(mux)))
 }
 func openapi(w http.ResponseWriter, _ *http.Request) {
 	var document any

@@ -21,10 +21,12 @@ Workflow YAML may omit `workflow` for legacy single-task behavior. When it decla
 
 ## Start the server once
 
+Run the shell commands below from the repository root—the directory containing
+`agent-python/`, `config/`, and this file.
+
 Generate every deterministic fixture from the repository root:
 
 ```sh
-cd /Users/msb/Code/state-driven-agent
 uv run --project agent-python python agent-python/scripts/generate_fixtures.py
 ```
 
@@ -136,7 +138,8 @@ Run the agent, retrieve state, and verify the result:
 curl -sS -X POST "${API_BASE_URL}/sessions/${SESSION_ID}/run" \
   -H 'content-type: application/json' -d '{"max_steps":30}' | jq
 curl -sS "${API_BASE_URL}/sessions/${SESSION_ID}" > session-case-3.json
-uv run --project agent-python python agent-python/scripts/verify_test_case_3.py session-case-3.json
+uv run --project agent-python python agent-python/scripts/verify_test_case_3.py \
+  session-case-3.json
 ```
 
 Case 3 has three mandatory workflow phases:
@@ -193,7 +196,6 @@ uv run --project agent-python python agent-python/scripts/generate_fixtures.py
 In a second terminal, create a Case 3 session. This is the same goal used by the deterministic replay:
 
 ```sh
-cd /Users/msb/Code/state-driven-agent
 export SESSION_ID=$(curl -sS -X POST "${API_BASE_URL}/sessions" \
   -H 'content-type: application/json' \
   -d '{"config_ref":"test-case-3.yaml","user_prompt":"Perform a complete 3-Phase Financial Audit on the provided employee dataset:\n\nPhase 1: Identify all rows with corrupted age or salary fields. Log their IDs.\nPhase 2: Normalize the salary field to a standard float. Calculate the exact median salary for valid employees living in New York (case-insensitive).\nPhase 3: Output a clean, final markdown table breaking down the total valid headcount and average age per unique city.\n\nYou must execute your steps incrementally. Do not try to solve all phases in a single script."}' \
@@ -239,7 +241,6 @@ Case 5 proves the requested completed-session behavior. It first completes Case 
 The following commands perform the live API test from start to finish. Use a separate session ID from Case 4. If the API is already running, keep it running; otherwise start it in one terminal and run the remaining commands in a second terminal.
 
 ```sh
-cd /Users/msb/Code/state-driven-agent
 uv run --project agent-python python agent-python/scripts/generate_fixtures.py
 # Start one implementation using the shared port-8000 command above.
 ```
@@ -247,7 +248,6 @@ uv run --project agent-python python agent-python/scripts/generate_fixtures.py
 In the second terminal, create a fresh Case 3 session and save its ID:
 
 ```sh
-cd /Users/msb/Code/state-driven-agent
 export CASE5_SESSION_ID=$(curl -sS -X POST "${API_BASE_URL}/sessions" \
   -H 'content-type: application/json' \
   -d '{"config_ref":"test-case-3.yaml","user_prompt":"Perform a complete 3-Phase Financial Audit on the provided employee dataset:\n\nPhase 1: Identify all rows with corrupted age or salary fields. Log their IDs.\nPhase 2: Normalize the salary field to a standard float. Calculate the exact median salary for valid employees living in New York (case-insensitive).\nPhase 3: Output a clean, final markdown table breaking down the total valid headcount and average age per unique city.\n\nYou must execute your steps incrementally. Do not try to solve all phases in a single script."}' \
