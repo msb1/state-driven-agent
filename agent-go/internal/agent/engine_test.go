@@ -22,11 +22,16 @@ func (r *replay) Decide(_ context.Context, _ []Message) (Decision, error) {
 	return d, nil
 }
 func (r *replay) Compact(_ context.Context, goal string, _ []Message, _ *string, _ bool) (string, error) {
-	return "<COMPACTED_STATE>\n<USER_GOAL>\n" + goal + "\n</USER_GOAL>\n<GLOBAL_LESSON_LEDGER>\n- currency NULL semicolon UNKNOWN case-insensitive\n</GLOBAL_LESSON_LEDGER>\n</COMPACTED_STATE>", nil
+	return "<COMPACTED_STATE><USER_GOAL>" + goal + "</USER_GOAL><GLOBAL_LESSON_LEDGER>- None.</GLOBAL_LESSON_LEDGER><DEAD_ENDS>- None.</DEAD_ENDS><CURRENT_LOCAL_PIVOT>Continue the task.</CURRENT_LOCAL_PIVOT></COMPACTED_STATE>", nil
 }
 func TestWorkflowCompactsAndCanResume(t *testing.T) {
 	p1, p2, p3 := "one", "two", "three"
-	cfg := Config{SystemPrompt: "x", Memory: Memory{MaxTokens: 1, MaxSteps: 20, RawTurnsToKeep: 1, HybridReflection: true}, Workflow: &WorkflowConfig{EntryPhase: p1, Phases: []Phase{
+	cfg := Config{SystemPrompt: "x", Memory: Memory{MaxTokens: 1, MaxSteps: 20, RawTurnsToKeep: 1, HybridReflection: true, ContextWindowTokens: 100000, ReservedOutputTokens: 512, MaxSummaryTokens: 2048, CompactionMaxAttempts: 1, CompactionMaxPasses: 1, CompactionMinGrowthTokens: 1}, Tools: []ToolDefinition{
+		{Name: "audit", Parameters: map[string]any{"type": "object", "properties": map[string]any{"parser": map[string]any{"type": "string", "enum": []any{"naive", "robust"}}}, "required": []any{"parser"}}},
+		{Name: "median", Parameters: map[string]any{"type": "object", "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "required": []any{"ok"}}},
+		{Name: "report", Parameters: map[string]any{"type": "object", "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "required": []any{"ok"}}},
+		{Name: "validate", Parameters: map[string]any{"type": "object", "properties": map[string]any{"ok": map[string]any{"type": "boolean"}}, "required": []any{"ok"}}},
+	}, Workflow: &WorkflowConfig{EntryPhase: p1, Phases: []Phase{
 		{ID: p1, AllowedTools: []string{"audit"}, Completion: []Evidence{{Tool: "audit", Required: true, Arguments: map[string]any{"parser": "robust"}, Result: map[string]any{"phase": "one"}}}, Transitions: []Edge{{To: p2, When: "phase_complete"}}},
 		{ID: p2, AllowedTools: []string{"median"}, Completion: []Evidence{{Tool: "median", Required: true, Arguments: map[string]any{"ok": true}, Result: map[string]any{"phase": "two"}}}, Transitions: []Edge{{To: p3, When: "phase_complete"}}},
 		{ID: p3, AllowedTools: []string{"report", "validate"}, Completion: []Evidence{{Tool: "report", Required: true, Result: map[string]any{"phase": "three"}}, {Tool: "validate", Required: true, Result: map[string]any{"valid": true}}}, Transitions: []Edge{{To: "complete", When: "phase_complete"}}},

@@ -1,4 +1,4 @@
-# Immutable Test Case 2 workflow profile. Select with config_ref: "test-case-2.yaml".
+# Immutable Test Case 2 workflow profile. Select with config_ref: "revenue-analysis.yaml".
 # Add profiles to config/ without restarting the API server.
 
 agent:
@@ -6,7 +6,7 @@ agent:
   system_prompt: |
     You are a helpful data analyst agent. Inspect schemas, normalize inconsistent
     city casing and foreign keys, and validate the final Q1 Chicago revenue.
-  model: qwen2.5-7b-instruct-mlx
+  model: ${MAIN_MODEL:-qwen2.5-7b-instruct-mlx}
   llm:
     base_url: ${OPENAI_BASE_URL:-http://127.0.0.1:8080/v1}
     api_key_env: OPENAI_API_KEY

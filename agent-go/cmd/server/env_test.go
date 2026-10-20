@@ -42,3 +42,17 @@ func TestLoadDotEnvFileRejectsMalformedLine(t *testing.T) {
 		t.Fatal("expected malformed .env line to fail")
 	}
 }
+
+func TestDU01C03DotenvModelWinsForNewSessions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(path, []byte("MAIN_MODEL=dotenv-model\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MAIN_MODEL", "inherited-model")
+	if err := loadDotEnvFile(path); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv("MAIN_MODEL"); got != "dotenv-model" {
+		t.Fatalf("dotenv model should win for new sessions, got %q", got)
+	}
+}

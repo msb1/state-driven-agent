@@ -1,5 +1,5 @@
 # Immutable Test Case 3 workflow profile: multi-phase HR/financial compaction stress test.
-# Select with config_ref: "test-case-3.yaml"; no server restart is required.
+# Select with config_ref: "employee-audit.yaml"; no server restart is required.
 agent:
   name: state-driven-hr-financial-auditor
   system_prompt: |
@@ -10,7 +10,7 @@ agent:
     it: currency handling, NULL handling, semicolon handling, then robust parsing.
     For Phase 2, exclude invalid salaries and compare city names case-insensitively.
     For Phase 3, normalize city names and omit invalid ages. After validation,
-    return a final answer headed "Phase 3" that includes the clean markdown table.
+    return a final answer whose first line is exactly "Phase 3", followed by a newline and the clean markdown table.
   model: ${MAIN_MODEL:-qwen2.5-7b-instruct-mlx}
   llm:
     base_url: ${OPENAI_BASE_URL:-http://127.0.0.1:8080/v1}
@@ -18,9 +18,17 @@ agent:
     temperature: 0.1
     timeout_seconds: 90
   memory:
-    # The deliberately verbose failure results should cross this limit repeatedly.
-    max_tokens: 2000
+    # Full-request soft estimate; protected rules/schemas contribute to this size.
+    max_tokens: 16000
     max_steps: 30
+    run_max_steps: 30
+    compaction_interval_steps: 8
+    compaction_min_interval_steps: 4
+    compaction_min_growth_tokens: 2048
+    optional_compaction_min_pressure_ratio: 0.70
+    optional_compaction_min_reclaimable_tokens: 4096
+    optional_compaction_min_reduction_tokens: 2048
+    optional_compaction_min_reduction_ratio: 0.10
     raw_turns_to_keep: 4
     hybrid_reflection: true
   output:
@@ -143,3 +151,25 @@ agent:
           normalize_city: {type: boolean}
           drop_invalid_age: {type: boolean}
         required: [phase_1_logged, median_salary, normalize_city, drop_invalid_age]
+
+  execution:
+    max_no_progress_steps: 6
+    argument_bindings:
+      - tool: validate_employee_audit
+        argument: median_salary
+        source_label: 'New York median salary:'
+  completion:
+    instructions: 'The first line must be exactly the plain text `Phase 3`, with no other text or Markdown # marker on that line. Then write the exact verified Markdown city table using actual line breaks. After the table, write the labeled New York median salary. Do not add brackets, escaped newline text, code fences, diagnostic traces, normalization checks, tool errors, or phase-status commentary.'
+    forbidden_patterns: ['normalization-check', 'normalization trace', 'Traceback']
+    pattern: 'Phase 3\n[\s\S]*'
+    result_checks:
+      - kind: markdown_table
+        label: Clean city table
+        tool: generate_employee_phase_3_report
+        arguments: {normalize_city: true, drop_invalid_age: true}
+      - kind: number
+        label: 'New York median salary:'
+        tool: calculate_new_york_median_salary
+        arguments: {normalize_city: true, exclude_invalid_salary: true}
+        result: {status: calculated}
+        path: [median_salary]

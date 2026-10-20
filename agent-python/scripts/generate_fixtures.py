@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 # scripts/ lives directly below agent-python/.
 ROOT = Path(__file__).resolve().parents[1]
 RNG = random.Random(20260918)
-DEFAULT_DATABASE_URL = "postgresql://user:password@192.168.1.50:5432/elite_rag"
+DEFAULT_DATABASE_URL = "postgresql://user:password@192.168.1.50:5432/universal_state"
 
 
 def make_log() -> list[str]:

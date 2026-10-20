@@ -1,6 +1,10 @@
+> Contract-1.1.0 port status: pending. The implementation described below is the earlier baseline, including its superseded compaction algorithm; it is not the upgraded Python design. Implement the [current upgrade specification](../../design_update.md), [observable contract](../../contract.md) and [shared tests](../../test-cases.md). The [frozen Python 1.0.0 baseline](../../archive/agent-python-cleanup-20261016/reference/python-1.0.0/README.md) is historical and predates the latest completion changes.
+
 # Tokio implementation
 
-Axum handlers are async and SQLx is Tokio-native. The session and events tables are compatible with the Python service. YAML is resolved only below the configured root and raw bytes are SHA-256 hashed at creation.
+See the shared [observable contract and conformance audit](../../contract.md) for current differences, qualification requirements, and the common Python HTTP test harness.
+
+Axum handlers are async and SQLx is Tokio-native. The current session/event tables implement the earlier whole-snapshot design and are not sufficient for Python's schema-5 repository or ownership guarantees. YAML is resolved only below the configured root and raw bytes are SHA-256 hashed at creation.
 
 ## Build and compile
 
@@ -18,7 +22,7 @@ cargo run
 ```
 
 This uses the shared `config/` directory automatically and listens on port
-8000 by default. No environment variables are needed for the standard setup.
+8000 by default. Use the [shared test guide's startup procedure](../../test-cases.md) for validation, including the root `.env` connection to the dedicated `universal_state` database. Do not rely on the earlier server's legacy-project fallback.
 
 For compile-only and build commands, run these from `agent-rust/`:
 
@@ -51,7 +55,7 @@ cargo clippy --all-targets -- -D warnings
 
 ## Runtime contract
 
-The Rust server implements the same REST paths and JSON state contract as `agent-python`, including session create/read/message/run/resume, streamed run and resume, config discovery, and health. `/docs` uses Swagger UI and `/openapi.json` serves the checked-in schema snapshot generated from the Python FastAPI application. From the repository root, refresh the snapshot after changing Python request or response models with:
+The Rust baseline implements eight earlier functional API routes: session create/read/message/run/resume, streamed run, config discovery, and health. The additional Python storage/recovery routes and extended state remain porting work. `/docs` uses Swagger UI and `/openapi.json` serves a checked-in schema snapshot generated from the Python FastAPI application. Refreshing that schema advertises a target interface; it does not implement its routes. From the repository root, the snapshot refresh command is:
 
 ```sh
 uv run --project agent-python python -c 'import json; from agent_python.api import app; print(json.dumps(app.openapi(), indent=2))' > agent-rust/openapi.json

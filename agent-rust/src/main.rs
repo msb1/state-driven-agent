@@ -444,7 +444,7 @@ async fn create(
         return Err(validation_error(errors));
     }
     let goal = goal.unwrap();
-    let requested_ref = q["config_ref"].as_str().unwrap_or("test-case-1.yaml");
+    let requested_ref = q["config_ref"].as_str().unwrap_or("log-analysis.yaml");
     let (c, raw, h) = cfg(&a, requested_ref).map_err(|e| {
         (
             StatusCode::UNPROCESSABLE_ENTITY,

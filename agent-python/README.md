@@ -1,25 +1,29 @@
-# State-Driven AI Agent (Python)
+# State-driven agent — Python
 
-A framework-free, OpenAI-compatible agent loop with immutable session-selected configuration, evidence-gated workflow phases, hybrid memory compaction, PostgreSQL persistence, and SSE progress events.
+Python implements [observable contract 1.0.0](../contract.md), with immutable session configuration/goal, structured actions, evidence-gated workflows, budget-aware compaction, durable ordered history, PostgreSQL revisions/leases/fencing and recoverable execution.
 
-## Run once; select workflows per session
-
-From the repository root, generate fixtures and start the API:
+From the repository root, with PostgreSQL, fixtures and the model service available:
 
 ```sh
-uv run --project agent-python python agent-python/scripts/generate_fixtures.py
+uv sync --project agent-python
 uv run --project agent-python uvicorn agent_python.api:app \
-  --app-dir agent-python/src --reload
+  --app-dir agent-python/src --host 127.0.0.1 --port 8081
 ```
 
-The API reads immutable YAML workflow configs from `config/` by default. Add a new versioned YAML file to that directory without restarting the server, then select it in `POST /sessions` with a relative `config_ref`. Override the trusted directory only for server administration with `AGENT_CONFIG_ROOT`.
+Root `.env` supplies `MAIN_MODEL`, model endpoint and database settings. Model choice is unrestricted; existing sessions retain their resolved configuration. Shared YAML profiles live in root `config/`. The dedicated PostgreSQL database is `universal_state`; SQLite is unused.
 
-```sh
-curl -sS http://127.0.0.1:8000/configs | jq
-```
+See [operations](docs/operations.md) for fresh database setup and administration, [architecture](docs/architect.md) and [compaction](docs/compaction.md) for current implementation details, and parent [test-cases.md](../test-cases.md) for curl-based validation against any running language implementation.
 
-Each session is stored in PostgreSQL with its fully resolved immutable config snapshot, selected `config_ref`, and SHA-256 hash. A restart can reload memory, compaction ledger, workflow evidence, status, and final answer without trusting a later edit to YAML. Set `AGENT_SESSION_DATABASE_URL` to override the supplied PostgreSQL default.
+## Directory scope
 
-`POST /sessions` accepts `user_prompt` and optional `config_ref` (default `test-case-1.yaml`). `POST /sessions/{id}/run` executes a bounded JSON run. `POST /sessions/{id}/run/stream` streams SSE lifecycle and phase events. `POST /sessions/{id}/resume` restores even a completed or failed session, optionally accepts `content` as the next user turn, compacts if required, and streams continuation output. Phase-complete interim events are always sent; YAML `output.verbose_setup: true` enables extra setup status events.
+| Path | Kept because |
+| --- | --- |
+| `src/agent_python/` | Runtime implementation |
+| `pyproject.toml`, `uv.lock`, `.python-version`, local `.venv/` | Installation, reproducibility and execution environment |
+| `scripts/initialize_database.py` | Explicit current-schema creation |
+| `scripts/generate_fixtures.py` | Shared PostgreSQL fixture initialization/reset |
+| `scripts/reconcile_runs.py` | Abandoned-run administration |
+| `scripts/storage_retention.py` | Retention planning, export and guarded telemetry cleanup |
+| `docs/` and this README | Current operation and implementation guidance |
 
-Set `OPENAI_BASE_URL`, `OPENAI_API_KEY`, and `MAIN_MODEL` in the root `.env` for the local OpenAI-compatible endpoint. See [the shared test runbook](../test-cases.md) for the Case 1, 2, and 3 curl commands and the deterministic Case 3 replay harness.
+All other scripts, qualification tooling, benchmark results and milestone documents have been moved to the parent [archive](../archive/README.md). Tests are user-run from CLI; no testing/model/database calls were run as part of this cleanup. Go/Java/Rust conformance to the upgraded contract remains to be established after porting.

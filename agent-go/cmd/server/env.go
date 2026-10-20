@@ -16,20 +16,24 @@ func loadDotEnv() error {
 	if err != nil {
 		return err
 	}
-
-	// The documented Go startup directory is agent-go, while callers may also
-	// start the server from the repository root.
-	for _, path := range []string{
-		filepath.Join(workingDir, ".env"),
-		filepath.Join(workingDir, "..", ".env"),
-	} {
+	// Tests run with cmd/server as their working directory, while the service is
+	// usually started from agent-go. Walk to the repository root so both find
+	// the same root .env file.
+	for dir := workingDir; ; dir = filepath.Dir(dir) {
+		path := filepath.Join(dir, ".env")
 		if _, err := os.Stat(path); err == nil {
 			return loadDotEnvFile(path)
 		} else if !os.IsNotExist(err) {
 			return err
 		}
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			return nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return nil
+		}
 	}
-	return nil
 }
 
 func loadDotEnvFile(path string) error {
@@ -64,7 +68,11 @@ func loadDotEnvFile(path string) error {
 				value = value[1 : len(value)-1]
 			}
 		}
-		if _, exists := os.LookupEnv(key); !exists {
+		if key == "MAIN_MODEL" {
+			if err := os.Setenv(key, value); err != nil {
+				return fmt.Errorf("%s:%d: set %s: %w", path, lineNumber, key, err)
+			}
+		} else if _, exists := os.LookupEnv(key); !exists {
 			if err := os.Setenv(key, value); err != nil {
 				return fmt.Errorf("%s:%d: set %s: %w", path, lineNumber, key, err)
 			}

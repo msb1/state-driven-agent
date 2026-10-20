@@ -358,7 +358,7 @@
             "minLength": 1,
             "title": "Config Ref",
             "description": "Relative YAML path inside the server-approved config repository.",
-            "default": "test-case-1.yaml"
+            "default": "log-analysis.yaml"
           }
         },
         "type": "object",

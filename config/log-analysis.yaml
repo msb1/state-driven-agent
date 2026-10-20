@@ -1,4 +1,4 @@
-# Immutable Test Case 1 workflow profile. Select with config_ref: "test-case-1.yaml".
+# Immutable Test Case 1 workflow profile. Select with config_ref: "log-analysis.yaml".
 # This file is language-neutral: only YAML, JSON-compatible values, and tool metadata.
 agent:
   name: state-driven-data-analyst

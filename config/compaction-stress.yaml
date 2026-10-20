@@ -1,0 +1,245 @@
+# Live regression using existing employee tools. All diagnostic evidence is required.
+# Soft thresholds use full-request conservative byte estimates; hard limits are independent.
+agent:
+  name: compaction-stress
+  system_prompt: |-
+    You are running a compaction regression over the employee fixture. Execute every diagnostic
+    attempt, including expected failures, before the successful attempt in each phase.
+    Phase 1: inspect the schema, then use naive, currency_cleaned, null_cleaned, and robust parsers.
+    Phase 2: use (normalize_city=false, exclude_invalid_salary=false), then (false,true), then (true,true).
+    Phase 3: use (normalize_city=false, drop_invalid_age=true), then (true,false), then (true,true),
+    then validate the audit. Never skip required diagnostic evidence or finish an incomplete phase.
+    Carry lessons about currency, NULL, semicolon corruption, UNKNOWN salaries, and city casing.
+    The final answer's first line must be exactly Phase 3, followed by a newline, then the exact clean city table and median
+    New York salary 92500.0. Omit diagnostic traces from the final answer.
+  model: ${MAIN_MODEL:-qwen2.5-7b-instruct-mlx}
+  llm:
+    base_url: ${OPENAI_BASE_URL:-http://127.0.0.1:8080/v1}
+    api_key_env: OPENAI_API_KEY
+    temperature: 0.1
+    timeout_seconds: 90
+  memory:
+    max_tokens: 12000
+    max_steps: 40
+    run_max_steps: 40
+    compaction_interval_steps: 2
+    compaction_min_interval_steps: 2
+    compaction_min_growth_tokens: 1024
+    optional_compaction_min_pressure_ratio: 0.0
+    optional_compaction_min_reclaimable_tokens: 1024
+    optional_compaction_min_reduction_tokens: 512
+    optional_compaction_min_reduction_ratio: 0.02
+    raw_turns_to_keep: 4
+    hybrid_reflection: true
+  output:
+    verbose_setup: true
+  workflow:
+    entry_phase: phase_1_corruption_audit
+    phases:
+    - id: phase_1_corruption_audit
+      name: Phase 1 — identify corrupted employee records
+      instruction: Use the incremental parser attempts when diagnosing corruption, then log the corruption
+        IDs with the robust parser.
+      allowed_tools:
+      - inspect_employee_audit_schema
+      - audit_employee_phase_1
+      completion:
+      - description: The naive parser exposed the currency-formatted salary failure.
+        tool: audit_employee_phase_1
+        required: true
+        arguments:
+          parser: naive
+        content_contains:
+        - $80,000
+      - description: The currency-cleaned parser exposed the NULL age failure.
+        tool: audit_employee_phase_1
+        required: true
+        arguments:
+          parser: currency_cleaned
+        content_contains:
+        - 'NULL'
+      - description: The NULL-cleaned parser exposed the semicolon-corrupted age failure.
+        tool: audit_employee_phase_1
+        required: true
+        arguments:
+          parser: null_cleaned
+        content_contains:
+        - 41; extra_field_corrupted
+      - description: The robust parser logged the complete Phase 1 corruption IDs.
+        tool: audit_employee_phase_1
+        arguments:
+          parser: robust
+        result:
+          phase: Phase 1
+          status: logged
+        required: true
+      transitions:
+      - to: phase_2_salary_median
+        when: phase_complete
+    - id: phase_2_salary_median
+      name: Phase 2 — normalized New York salary median
+      instruction: >-
+        Execute both required diagnostic attempts first: (normalize_city=false, exclude_invalid_salary=false),
+        then (false,true). Then calculate the normalized median using (true,true). All three outcomes are required.
+      allowed_tools:
+      - calculate_new_york_median_salary
+      completion:
+      - description: The unfiltered salary metric failed because UNKNOWN values remained.
+        tool: calculate_new_york_median_salary
+        required: true
+        arguments:
+          normalize_city: false
+          exclude_invalid_salary: false
+        content_contains:
+        - UNKNOWN
+      - description: The case-sensitive city metric failed with the known incorrect median.
+        tool: calculate_new_york_median_salary
+        required: true
+        arguments:
+          normalize_city: false
+          exclude_invalid_salary: true
+        content_contains:
+        - Expected median 92500
+      - description: The normalized New York salary median was calculated.
+        tool: calculate_new_york_median_salary
+        arguments:
+          normalize_city: true
+          exclude_invalid_salary: true
+        result:
+          phase: Phase 2
+          median_salary: 92500.0
+          status: calculated
+        required: true
+      transitions:
+      - to: phase_3_city_report
+        when: phase_complete
+    - id: phase_3_city_report
+      name: Phase 3 — clean city report and audit validation
+      instruction: >-
+        Execute both required report diagnostics first: (normalize_city=false, drop_invalid_age=true),
+        then (true,false). Then generate the clean report using (true,true) and validate the complete audit. All outcomes are required.
+      allowed_tools:
+      - generate_employee_phase_3_report
+      - validate_employee_audit
+      completion:
+      - description: The report exposed the unnormalized-city failure.
+        tool: generate_employee_phase_3_report
+        required: true
+        arguments:
+          normalize_city: false
+          drop_invalid_age: true
+        content_contains:
+        - split New York
+      - description: The report exposed the invalid-age averaging failure.
+        tool: generate_employee_phase_3_report
+        required: true
+        arguments:
+          normalize_city: true
+          drop_invalid_age: false
+        content_contains:
+        - cannot average age
+      - description: The normalized Phase 3 markdown city matrix was generated.
+        tool: generate_employee_phase_3_report
+        arguments:
+          normalize_city: true
+          drop_invalid_age: true
+        content_contains:
+        - Phase 3
+        - '| City |'
+        required: true
+      - description: The final employee audit validator confirmed every phase.
+        tool: validate_employee_audit
+        result:
+          valid: true
+        required: true
+      transitions:
+      - to: complete
+        when: phase_complete
+  tools:
+  - name: inspect_employee_audit_schema
+    description: Inspect the deterministic 1,000-row employees fixture and its data-quality rules.
+    parameters:
+      type: object
+      properties: {}
+      required: []
+  - name: audit_employee_phase_1
+    description: Incrementally identify IDs with corrupt age or salary fields. Start naive; use each reported
+      failure to select the next parser mode, ending with robust.
+    parameters:
+      type: object
+      properties:
+        parser:
+          type: string
+          enum:
+          - naive
+          - currency_cleaned
+          - null_cleaned
+          - robust
+      required:
+      - parser
+  - name: calculate_new_york_median_salary
+    description: Calculate Phase 2 median salary. Invalid salary strings must be excluded and New York
+      must be case-insensitive.
+    parameters:
+      type: object
+      properties:
+        normalize_city:
+          type: boolean
+        exclude_invalid_salary:
+          type: boolean
+      required:
+      - normalize_city
+      - exclude_invalid_salary
+  - name: generate_employee_phase_3_report
+    description: Generate the clean Phase 3 markdown city matrix after normalizing city and dropping invalid
+      ages.
+    parameters:
+      type: object
+      properties:
+        normalize_city:
+          type: boolean
+        drop_invalid_age:
+          type: boolean
+      required:
+      - normalize_city
+      - drop_invalid_age
+  - name: validate_employee_audit
+    description: Validate the completed three-phase audit before final response.
+    parameters:
+      type: object
+      properties:
+        phase_1_logged:
+          type: boolean
+        median_salary:
+          type: number
+        normalize_city:
+          type: boolean
+        drop_invalid_age:
+          type: boolean
+      required:
+      - phase_1_logged
+      - median_salary
+      - normalize_city
+      - drop_invalid_age
+
+  execution:
+    max_no_progress_steps: 6
+    argument_bindings:
+      - tool: validate_employee_audit
+        argument: median_salary
+        source_label: 'New York median salary:'
+  completion:
+    instructions: 'The first line must be exactly the plain text `Phase 3`, with no other text or Markdown # marker on that line. Then write the exact verified Markdown city table using actual line breaks. After the table, write the labeled New York median salary. Do not add brackets, escaped newline text, code fences, diagnostic traces, normalization checks, tool errors, or phase-status commentary.'
+    forbidden_patterns: ['normalization-check', 'normalization trace', 'Traceback']
+    pattern: 'Phase 3\n[\s\S]*'
+    result_checks:
+      - kind: markdown_table
+        label: Clean city table
+        tool: generate_employee_phase_3_report
+        arguments: {normalize_city: true, drop_invalid_age: true}
+      - kind: number
+        label: 'New York median salary:'
+        tool: calculate_new_york_median_salary
+        arguments: {normalize_city: true, exclude_invalid_salary: true}
+        result: {status: calculated}
+        path: [median_salary]

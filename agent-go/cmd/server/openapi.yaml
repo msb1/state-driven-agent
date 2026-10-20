@@ -22,7 +22,72 @@ paths:
     get:
       summary: Get Session
       parameters: [{name: session_id, in: path, required: true, schema: {type: string}}]
-      responses: {'200': {description: Successful Response}, '404': {description: Not Found}}
+      responses: {'200': {description: Successful Response, content: {application/json: {schema: {$ref: '#/components/schemas/SessionState'}}}}, '404': {description: Not Found}}
+  /sessions/{session_id}/transcript:
+    get:
+      summary: Page immutable transcript records at a fixed sequence watermark
+      parameters:
+        - {name: session_id, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: after_sequence, in: query, schema: {type: integer, minimum: 0, default: 0}}
+        - {name: through_sequence, in: query, schema: {type: integer, minimum: 0}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 1000, default: 100}}
+      responses:
+        '200': {description: Immutable transcript page, content: {application/json: {schema: {$ref: '#/components/schemas/TranscriptPage'}}}}
+        '404': {description: Session not found}
+        '422': {description: Invalid UUID or cursor}
+  /sessions/{session_id}/diagnostics/{kind}:
+    get:
+      summary: Page durable compaction diagnostics independently of recent state tails
+      parameters:
+        - {name: session_id, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: kind, in: path, required: true, schema: {type: string, enum: [compaction_events, compaction_attempts, compaction_decisions]}}
+        - {name: after, in: query, schema: {type: integer, minimum: 0, default: 0}}
+        - {name: through, in: query, schema: {type: integer, minimum: 0}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 1000, default: 100}}
+      responses: {'200': {description: Durable diagnostic page}, '404': {description: Not Found}, '422': {description: Invalid cursor}}
+  /sessions/{session_id}/events:
+    get:
+      summary: Page durable session events at a fixed event-ID watermark
+      parameters:
+        - {name: session_id, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: after, in: query, schema: {type: integer, minimum: 0, default: 0}}
+        - {name: through, in: query, schema: {type: integer, minimum: 0}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 1000, default: 100}}
+      responses: {'200': {description: Event page}, '404': {description: Session not found}, '422': {description: Invalid cursor}}
+  /sessions/{session_id}/archives:
+    get:
+      summary: Page archive receipts in UUID order
+      parameters:
+        - {name: session_id, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: after, in: query, schema: {type: string, format: uuid}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 1000, default: 100}}
+      responses: {'200': {description: Archive receipt page}, '404': {description: Session not found}, '422': {description: Invalid UUID or limit}}
+  /sessions/{session_id}/retention:
+    get:
+      summary: Return keep-all retention policy and telemetry-pruning eligibility
+      parameters: [{name: session_id, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses: {'200': {description: Retention plan}, '404': {description: Session not found}, '422': {description: Invalid UUID}}
+  /sessions/{session_id}/executions:
+    get:
+      summary: List Tool Executions
+      parameters:
+        - {name: session_id, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: after, in: query, schema: {type: string, format: uuid}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 1000, default: 100}}
+      responses: {'200': {description: Current execution page}, '404': {description: Not Found}, '422': {description: Invalid UUID or limit}}
+  /sessions/{session_id}/runs:
+    get:
+      summary: List durable run lifecycle and fencing records
+      parameters:
+        - {name: session_id, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: after, in: query, schema: {type: string, format: uuid}}
+        - {name: limit, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 1000, default: 100}}
+      responses: {'200': {description: Current run lifecycle page}, '404': {description: Not Found}, '422': {description: Invalid limit}}
+  /runs/abandoned:
+    get:
+      summary: Inspect expired running lifecycles without replaying work
+      parameters: [{name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 1000, default: 100}}]
+      responses: {'200': {description: Bounded abandoned run list}, '422': {description: Invalid limit}}
   /sessions/{session_id}/messages:
     post:
       summary: Append User Message
@@ -31,6 +96,11 @@ paths:
         required: true
         content: {application/json: {schema: {$ref: '#/components/schemas/AppendUserMessageRequest'}}}
       responses: {'200': {description: Successful Response}, '404': {description: Not Found}, '409': {description: Conflict}, '422': {description: Validation Error}}
+  /sessions/{session_id}/cancel:
+    post:
+      summary: Request cooperative cancellation of the active run
+      parameters: [{name: session_id, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses: {'200': {description: Target run IDs and cancellation semantics}, '404': {description: Session not found}, '422': {description: Invalid session ID}}
   /sessions/{session_id}/run:
     post:
       summary: Run Session
@@ -62,7 +132,7 @@ components:
       required: [user_prompt]
       properties:
         user_prompt: {type: string, minLength: 1, description: The user's goal; becomes the first session-memory message.}
-        config_ref: {type: string, minLength: 1, default: test-case-1.yaml, description: Relative YAML path inside the server-approved config repository.}
+        config_ref: {type: string, minLength: 1, default: log-analysis.yaml, description: Relative YAML path inside the server-approved config repository.}
     AppendUserMessageRequest:
       type: object
       required: [content]
@@ -78,3 +148,71 @@ components:
         - type: object
           properties:
             content: {anyOf: [{type: string, minLength: 1}, {type: 'null'}]}
+
+    Message:
+      type: object
+      required: [message_id, sequence, created_at, role, content, name, tool_call_id, tool_calls]
+      properties:
+        message_id: {type: string, format: uuid}
+        sequence: {anyOf: [{type: integer, minimum: 1}, {type: 'null'}]}
+        created_at: {type: string, format: date-time}
+        role: {type: string, enum: [system, user, assistant, tool]}
+        content: {anyOf: [{type: string}, {type: 'null'}]}
+        name: {anyOf: [{type: string}, {type: 'null'}]}
+        tool_call_id: {anyOf: [{type: string}, {type: 'null'}]}
+        tool_calls: {anyOf: [{type: array, items: {type: object}}, {type: 'null'}]}
+    TranscriptEntry:
+      type: object
+      required: [message_id, sequence, kind, payload, run_id, decision_step, created_at, recorded_at]
+      properties:
+        message_id: {type: string, format: uuid}
+        sequence: {type: integer, minimum: 1}
+        kind: {type: string}
+        payload: {type: object}
+        run_id: {anyOf: [{type: string, format: uuid}, {type: 'null'}]}
+        decision_step: {type: integer, minimum: 0}
+        created_at: {type: string, format: date-time}
+        recorded_at: {type: string, format: date-time}
+    TranscriptPage:
+      type: object
+      required: [session_id, history_complete, through_sequence, next_after_sequence, entries]
+      properties:
+        session_id: {type: string, format: uuid}
+        history_complete: {type: boolean}
+        through_sequence: {type: integer, minimum: 0}
+        next_after_sequence: {type: integer, minimum: 0}
+        entries: {type: array, items: {$ref: '#/components/schemas/TranscriptEntry'}}
+    SessionState:
+      type: object
+      required: [id, goal, config_ref, config_sha256, resolved_config_sha256, revision, next_transcript_sequence, history_complete, active_ledger_id, memory, run_id, run_status, run_started_at, run_ended_at, run_termination_reason, pending_tool_calls, last_error, ledger_state, diagnostic_counts, diagnostics_complete, diagnostic_history_complete, diagnostic_rejections, compaction_savings_total, compaction_savings_known, step_count, run_count, status, final_answer]
+      properties:
+        id: {type: string, format: uuid}
+        goal: {type: string}
+        config_ref: {anyOf: [{type: string}, {type: 'null'}]}
+        config_sha256: {anyOf: [{type: string}, {type: 'null'}]}
+        resolved_config_sha256: {anyOf: [{type: string}, {type: 'null'}]}
+        transcript_pending: {type: array, maxItems: 0, items: {$ref: '#/components/schemas/TranscriptEntry'}}
+        pending_commit_id: {type: 'null'}
+        revision: {type: integer, minimum: 0}
+        next_transcript_sequence: {type: integer, minimum: 1}
+        active_ledger_id: {anyOf: [{type: string, format: uuid}, {type: 'null'}]}
+        history_complete: {type: boolean}
+        memory: {type: array, items: {$ref: '#/components/schemas/Message'}}
+        run_id: {anyOf: [{type: string, format: uuid}, {type: 'null'}]}
+        run_status: {type: string, enum: [idle, running, complete, failed, cancelled, interrupted, blocked]}
+        run_started_at: {anyOf: [{type: string, format: date-time}, {type: 'null'}]}
+        run_ended_at: {anyOf: [{type: string, format: date-time}, {type: 'null'}]}
+        run_termination_reason: {anyOf: [{type: string}, {type: 'null'}]}
+        pending_tool_calls: {type: array, items: {type: object}}
+        last_error: {anyOf: [{type: object}, {type: 'null'}]}
+        ledger_state: {anyOf: [{type: object}, {type: 'null'}]}
+        diagnostic_counts: {type: object, additionalProperties: {type: integer, minimum: 0}}
+        diagnostics_complete: {type: boolean}
+        diagnostic_history_complete: {type: boolean}
+        diagnostic_rejections: {type: integer, minimum: 0}
+        compaction_savings_total: {type: integer}
+        compaction_savings_known: {type: boolean}
+        step_count: {type: integer, minimum: 0}
+        run_count: {type: integer, minimum: 0}
+        status: {type: string, enum: [active, complete, failed]}
+        final_answer: {anyOf: [{type: string}, {type: 'null'}]}
