@@ -346,7 +346,7 @@ Operational scripts include `reconcile_runs.py` for abandoned-run inspection or 
 | `tools.py` | Registered fixture tools and recovery adapter extension points |
 | `retention.py` | Verified export and protected telemetry-only pruning |
 
-Paths above are relative to [agent-python/src/agent_python](agent-python/src/agent_python). Detailed algorithm/transaction references are [architecture](agent-python/docs/architect.md) and [compaction](agent-python/docs/compaction.md). The shared [test-cases.md](test-cases.md) provides current curl validation scenarios.
+Paths above are relative to [agent-python/src/agent_python](agent-python/src/agent_python). Detailed algorithm/transaction references are [architecture](agent-python/docs/architecture.md), [implementation](agent-python/docs/implementation.md), and [compaction](agent-python/docs/compaction.md). The shared [test-cases.md](test-cases.md) provides current curl validation scenarios.
 
 Historical regression scripts, benchmarks, manifests, frozen source/schema and qualification reports are preserved in [archive](archive/README.md). They are not active runtime dependencies, and relocated test tooling may require restoration/adaptation before use. The active application directory contains four supported operational scripts rather than an active qualification runner.
 

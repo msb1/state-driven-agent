@@ -10,7 +10,7 @@ We have substantial design material, but before this review it was distributed a
 | --- | --- |
 | [contract.md](contract.md) | Normative observable behavior required of every implementation |
 | **This document** | Current design changes, verified gaps, implementation work packages and acceptance gates |
-| [Python architecture](agent-python/docs/architect.md) | Detailed state, repository, transaction and lifecycle algorithm |
+| [Python architecture](agent-python/docs/architecture.md) | Detailed state, repository, transaction and lifecycle algorithm |
 | [Python compaction](agent-python/docs/compaction.md) | Detailed payload order, budgeting, grouping, ledger and compaction algorithm |
 | [Python operations](agent-python/docs/operations.md) | Dedicated database, startup, inspection, recovery and retention administration |
 | [test-cases.md](test-cases.md) | Same complete curl/jq API acceptance suite for all four servers |

@@ -123,7 +123,7 @@ func (c OpenAIClient) decisionPayload(m []Message) (map[string]any, error) {
 	return payload, nil
 }
 
-func (c OpenAIClient) summaryPayload(goal string, historical []Message, previous *string, hybrid bool) map[string]any {
+func (c OpenAIClient) summaryPayload(goal string, historical []Message, previous *string, hybrid bool, correction ...string) map[string]any {
 	prompt := `Create a compacted context state for an agent. Preserve only verified facts.
 Use exactly these headings:
 - Core Objective
@@ -156,6 +156,9 @@ State the most important active hypothesis or next operational focus in one sent
 </COMPACTED_STATE>
 
 The raw working buffer is retained by the primary agent outside this response.`
+	}
+	if len(correction) > 0 && correction[0] != "" {
+		prompt += "\n\nRetry correction: " + correction[0]
 	}
 	source, _ := sourceText(goal, historical, previous)
 	user := source
@@ -342,6 +345,14 @@ func freshCallID(used map[string]bool) string {
 	}
 }
 func (c OpenAIClient) Compact(ctx context.Context, goal string, h []Message, old *string, hybrid bool) (string, error) {
+	return c.compact(ctx, c.summaryPayload(goal, h, old, hybrid))
+}
+
+func (c OpenAIClient) CompactWithFeedback(ctx context.Context, goal string, h []Message, old *string, hybrid bool, feedback string) (string, error) {
+	return c.compact(ctx, c.summaryPayload(goal, h, old, hybrid, feedback))
+}
+
+func (c OpenAIClient) compact(ctx context.Context, payload map[string]any) (string, error) {
 	r := struct {
 		Choices []struct {
 			Message struct {
@@ -349,7 +360,6 @@ func (c OpenAIClient) Compact(ctx context.Context, goal string, h []Message, old
 			} `json:"message"`
 		} `json:"choices"`
 	}{}
-	payload := c.summaryPayload(goal, h, old, hybrid)
 	postErr := c.post(ctx, payload, &r)
 	if postErr != nil {
 		return "", postErr

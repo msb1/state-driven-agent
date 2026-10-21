@@ -1,6 +1,6 @@
-# Python implementation architecture
+# Python architecture
 
-Current implementation manual, 2026-10-18. Start with the [docs index](README.md) and [observable contract](../../contract.md).
+Current implementation architecture, 2026-10-20. Start with the [docs index](README.md), [implementation guide](implementation.md), and [observable contract](../../contract.md).
 
 Reference: [contract 1.1.0](../../contract.md), [frozen reference baseline 1.0.0](../../archive/agent-python-cleanup-20261016/reference/python-1.0.0/README.md). Python is the qualified behavioral reference. Go/Java/Rust still require the upgraded contract port; shared successful examples do not certify full parity.
 
@@ -21,6 +21,174 @@ Reference: [contract 1.1.0](../../contract.md), [frozen reference baseline 1.0.0
 | `retention.py` | Keep-all default, consistent verified export, dependency-protected telemetry-only pruning |
 
 The application uses ordinary FastAPI, HTTPX, Psycopg and Pydantic; no agent orchestration framework. The parent curl validation guide uses the same HTTP requests and assertions for every language implementation.
+
+### Component diagram
+
+```mermaid
+flowchart LR
+    Client[HTTP client]
+    Admin[Admin scripts]
+    subgraph API[FastAPI application · api.py]
+        Routes[REST and SSE routes]
+        Coordinator[ExecutionCoordinator]
+        Repo[SessionRepository]
+    end
+    subgraph Runtime[agent_python]
+        Config[ConfigRepository]
+        Engine[AgentEngine]
+        Context[Budget and compaction]
+        LLM[LlmClient]
+        Tools[Registered fixture tools]
+        Transcript[Transcript and state projection]
+    end
+    DB[(PostgreSQL session database)]
+    Fixtures[(PostgreSQL fixture tables)]
+    Model[OpenAI compatible endpoint]
+
+    Client --> Routes
+    Routes --> Config
+    Routes --> Coordinator
+    Coordinator --> Repo
+    Coordinator --> Engine
+    Engine --> Context
+    Engine --> LLM
+    Engine --> Tools
+    Engine --> Transcript
+    LLM --> Model
+    Tools --> Fixtures
+    Repo --> DB
+    Admin --> Repo
+```
+
+### Run lifecycle sequence
+
+```mermaid
+sequenceDiagram
+    actor Client
+    participant API as FastAPI route
+    participant Coord as ExecutionCoordinator
+    participant Repo as SessionRepository
+    participant Engine as AgentEngine
+    participant LLM as LlmClient
+    participant Tool as Tool adapter
+
+    Client->>API: POST run, stream, or resume
+    API->>Coord: execute requested lifecycle
+    Coord->>Repo: acquire owner/fence
+    Repo-->>Coord: lease identity
+    Coord->>Repo: reload authoritative state
+    Repo-->>Coord: session, config, active history
+    Coord->>Repo: persist run start
+    Coord->>Engine: run with execution coordinator
+    loop Each decision
+        Engine->>Coord: checkpoint lease and cancellation
+        Engine->>LLM: complete-request-budgeted decision
+        LLM-->>Engine: final, malformed response, or call batch
+        opt Tool calls
+            Engine->>Repo: persist pending calls and execution intent
+            loop Ordered calls
+                Engine->>Coord: checkpoint
+                Engine->>Tool: execute or reconcile
+                Tool-->>Engine: known result or uncertain outcome
+                Engine->>Repo: commit correlated result and evidence
+            end
+        end
+        Engine-->>API: status/interim/final/error event
+    end
+    Coord->>Repo: commit terminal state and run lifecycle
+    Coord-->>API: completed session state
+    API-->>Client: JSON or SSE events
+```
+
+### Persistence UML
+
+```mermaid
+erDiagram
+    AGENT_SESSIONS ||--o{ AGENT_SESSION_EVENTS : emits
+    AGENT_SESSIONS ||--o{ AGENT_SESSION_TRANSCRIPT : records
+    AGENT_SESSIONS ||--o| AGENT_SESSION_CONTEXT : projects
+    AGENT_SESSIONS ||--o{ AGENT_SESSION_DIAGNOSTICS : records
+    AGENT_SESSIONS ||--o{ AGENT_RUNS : owns
+    AGENT_SESSIONS ||--o{ AGENT_TOOL_EXECUTIONS : executes
+    AGENT_SESSIONS ||--o{ AGENT_SESSION_CALLS : maps
+    AGENT_SESSIONS ||--o{ AGENT_ARCHIVE_RECEIPTS : archives
+    AGENT_RUNS ||--o{ AGENT_TOOL_EXECUTIONS : contains
+    AGENT_SESSION_TRANSCRIPT ||--o{ AGENT_SESSION_CALLS : identifies
+    AGENT_SESSION_TRANSCRIPT ||--o| AGENT_SESSION_CONTEXT : anchors
+
+    AGENT_SESSIONS {
+        uuid session_id PK
+        jsonb state
+        jsonb config
+        text config_ref
+        text config_sha256
+        bigint revision
+        uuid last_commit_id
+        uuid lease_owner
+        bigint lease_fence
+        timestamptz lease_expires_at
+    }
+    AGENT_SESSION_EVENTS {
+        bigint event_id PK
+        uuid session_id FK
+        jsonb event
+        bigint revision
+        uuid commit_id
+    }
+    AGENT_SESSION_TRANSCRIPT {
+        uuid session_id FK
+        bigint sequence PK
+        uuid message_id
+        text kind
+        jsonb payload
+        uuid run_id
+        bigint decision_step
+    }
+    AGENT_SESSION_CONTEXT {
+        uuid session_id PK, FK
+        bigint revision
+        uuid goal_message_id FK
+        uuid ledger_record_id FK
+        jsonb raw_message_ids
+        jsonb ledger_state
+    }
+    AGENT_SESSION_DIAGNOSTICS {
+        uuid session_id FK
+        text family PK
+        bigint ordinal PK
+        jsonb payload
+    }
+    AGENT_RUNS {
+        uuid run_id PK
+        uuid session_id FK
+        uuid owner
+        bigint fence
+        text status
+        boolean cancel_requested
+    }
+    AGENT_TOOL_EXECUTIONS {
+        uuid execution_id PK
+        uuid session_id FK
+        uuid run_id FK
+        text call_id
+        text tool
+        uuid idempotency_key
+        text status
+        text result
+    }
+    AGENT_SESSION_CALLS {
+        uuid session_id FK
+        text call_id PK
+        uuid message_id FK
+    }
+    AGENT_ARCHIVE_RECEIPTS {
+        uuid archive_id PK
+        uuid session_id FK
+        bigint snapshot_revision
+        text sha256
+        jsonb manifest
+    }
+```
 
 ## Session creation and loop
 

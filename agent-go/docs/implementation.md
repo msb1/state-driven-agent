@@ -1,38 +1,17 @@
-> Contract-1.1.0 port status: pending. The implementation described below is the earlier baseline, including its superseded compaction algorithm; it is not the upgraded Python design. Implement the [current upgrade specification](../../design_update.md), [observable contract](../../contract.md) and [shared tests](../../test-cases.md). The [frozen Python 1.0.0 baseline](../../archive/agent-python-cleanup-20261016/reference/python-1.0.0/README.md) is historical and predates the latest completion changes.
+# Go implementation notes
 
-# Implementation notes
-
-See the shared [observable contract and conformance audit](../../contract.md) for current differences and the common Python HTTP test harness. Some migration notes below are historical; the audit records where current source differs.
+This document describes the checked-in implementation in `agent-go`. The Go port includes the current context budgeting and compaction path, normalized durable history, execution recovery, database ownership/fencing, and archive/retention operations.
 
 ## Build and run
 
-Run these commands from the `agent-go` directory. Go 1.27 or newer and access
-to the PostgreSQL database are required.
-
-The repository-level `.env` file is loaded automatically when the server
-starts. Values already exported in the shell take precedence over `.env`.
-The `.env` file should contain the local model endpoint, model, API key, and
-session database URL. No database export is needed before starting the server:
+Run from the `agent-go` directory. The repository `.env` is loaded when the server starts; already exported environment variables take precedence. Set `AGENT_CONFIG_ROOT` to the config directory (default `../config`) and `AGENT_SESSION_DATABASE_URL` to the PostgreSQL connection string. The default port is `8000`.
 
 ```sh
 cd agent-go
-```
-
-The repository `.env` contains defaults for `OPENAI_BASE_URL`,
-`OPENAI_API_KEY`, and `MAIN_MODEL`. You can override any of them in the shell.
-`AGENT_CONFIG_ROOT` defaults to `../config`, and `PORT` defaults to `8000`.
-
-### Run directly (development)
-
-`go run` compiles the server and starts it in one command:
-
-```sh
 go run ./cmd/server
 ```
 
-### Build a reusable binary
-
-Create the output directory, compile the server, then run the compiled binary:
+To build a binary:
 
 ```sh
 mkdir -p bin
@@ -40,48 +19,55 @@ go build -trimpath -ldflags='-s -w' -o bin/agent-go ./cmd/server
 ./bin/agent-go
 ```
 
-After changing Go source files, rebuild the binary and restart the server.
+The server uses `AGENT_FIXTURE_DATABASE_URL` for fixture tool queries when set; otherwise it uses the session database pool. Configuration is loaded on demand from `AGENT_CONFIG_ROOT`, and the server rejects config references that escape that directory. `/health` reports service/config-root status, `/configs` lists loadable configurations, `/docs` serves Swagger UI, and `/openapi.json` returns the embedded API schema.
 
-### Verify the build
+## Agent loop and context handling
 
-Run the tests and whitespace check before handing the service to another user:
+`Engine.Run` creates a run identity and timestamps, recovers persisted pending tool calls, and iterates while the session remains active and the configured step limit permits. Each iteration checks cancellation and ownership, advances workflow transitions, evaluates compaction, requests a model decision, and records model diagnostics. Native multi-tool-call decisions are retained and processed in order. Tool outputs are paired with their call IDs in memory and successful calls are checked against workflow evidence and configured result checks.
+
+The context manager estimates the full projected chat-completions request, including system and workflow instructions, completion constraints, artifacts, and active memory. It can compact when hard context pressure is reached, or when configured optional interval/size/growth gates pass. History is split into complete assistant/tool interaction groups; the newest configured raw groups remain intact. A candidate ledger is checked for required structure, source-grounded content and size, and then evaluated as part of the complete projected request. It is accepted only if it reduces estimated input and fits the hard request budget (and meets configured optional reduction thresholds). Attempts and decisions are recorded as diagnostics with source hashes and message indexes. A rejected proposal leaves active history and the previous ledger intact; if the request still exceeds the hard limit after compaction attempts, the run returns a context-budget error.
+
+Workflow phases, transitions, evidence, result artifacts, and execution argument bindings are structured state. Workflow evidence survives compaction. Final answers are checked for nonempty content, completed workflow, forbidden patterns, exact or regex presentation constraints, JSON schema constraints, and configured outputs derived from executed tool results. Rejected finals and invalid model responses are fed back into the conversation. Consecutive invalid-response and optional no-progress limits bound repeated failures.
+
+Tool recovery modes are configured per tool: read-only operations may be retried, idempotent operations receive stable keys, and reconcilable operations query for an existing outcome. A potentially completed side effect without a safe resolution path is marked uncertain and blocks the run for explicit recovery. `/resume` first reconciles pending calls before asking the model for another decision.
+
+## Durable session and history model
+
+The public session document retains explicit nullable values and defaults. Messages have stable UUIDs, UTC timestamps, and a transcript sequence. Audit records share that sequence, so retained transcript sequence values can have gaps after compaction. Internal wire messages are a separate projection used to make model requests.
+
+`StageMessages` and `StageDiagnostics` move new records into detached persistence outboxes. The save path prepares a detached proposal, computes a commit fingerprint, locks the session row, checks immutable configuration identity and lease/fence ownership, and writes the snapshot and normalized rows in one PostgreSQL transaction. The transaction includes revision and commit identity, active context references, transcript, diagnostics, run/tool-execution lifecycle, tool-call mapping, retention state, and the corresponding event. If the transaction fails, caller state and its outboxes remain available for retry; an already committed matching identity can be acknowledged idempotently.
+
+Fetch reads the hot snapshot, immutable config, active context, active message rows, typed ledger, and bounded diagnostic projections together, validates their identities/revisions, and reconstructs only tool executions referenced by active tool-call messages. Full transcript, event, diagnostic, run, execution, archive, and retention data are served from their durable tables through separate cursor domains. Old snapshot imports make an explicit history gap rather than claiming transcript completeness.
+
+## Ownership, cancellation, and recovery
+
+Database leases establish the single active worker for a session. Acquiring ownership increments the fence; the worker renews the lease periodically and carries owner/fence values into saves. Engine checkpoints verify that the lease remains current and that a run has not been cancelled. A stale worker cannot commit using an expired or superseded fence. Cancellation is recorded against running lifecycles while serialized with session run state. At startup, expired running lifecycles are marked interrupted or recovered from a terminal snapshot; startup reconciliation does not replay model or tool work. Explicit resume is the recovery path.
+
+## HTTP API and retention commands
+
+The routes are defined in `cmd/server/main.go` and the checked-in OpenAPI documents. In addition to session create/read and message/run/stream/resume/cancel, the server exposes paged endpoints for executions, runs, events, transcript, archives, and diagnostic families, a read-only retention plan, and abandoned-run listing. Run and stream handlers persist state through the transactional store; SSE events report status, model requests, tool outcomes, compaction, completion, and errors.
+
+Retention administration runs as a server binary subcommand:
 
 ```sh
-GOCACHE=/tmp/state-driven-agent-go-cache go test ./...
-git diff --check
+go run ./cmd/server retention plan --session-id UUID
+go run ./cmd/server retention export --session-id UUID --archive /path/session.jsonl
+go run ./cmd/server retention verify --archive /path/session.jsonl
+go run ./cmd/server retention prune-telemetry --session-id UUID --archive /path/session.jsonl
 ```
 
-The `GOCACHE` setting is optional; it is useful in restricted environments
-where Go's default cache directory is not writable. Once the server is
-running, confirm it is serving the expected configuration:
+Export uses a read-only repeatable-read snapshot and creates the archive file exclusively with restrictive permissions. Verification checks canonical JSONL framing, archive and table digests, session identity, ordering, counts, and watermarks. Pruning is explicit and transactional; it requires a verified fresh archive, a matching session revision and digests, a terminal session with no active or unresolved work, and valid ownership/fencing. The default retention policy is keep-all. The HTTP retention endpoint only reports eligibility and requirements.
 
-```sh
-curl -sS http://127.0.0.1:8000/health
-curl -sS http://127.0.0.1:8000/configs
-```
+## Source map
 
-The current baseline stores whole-session/config JSONB and separate events. It does not implement Python's schema-5 state, atomic commit protocol or database ownership/fencing. Its local run/stream mutex does not protect append or other processes. Some save errors are ignored; source review must not treat event emission as proof of a successful durable write.
-
-The checked-in server already uses the OpenAI-compatible adapter in `internal/agent/openai.go` through `execute`. It currently handles only the first native call and the earlier workflow/completion/compaction rules. The upgrade work is specified in [design_update.md](../../design_update.md); an adapter is present, but the new contract is not yet implemented.
-
-The user runs `go test ./...` and the complete [shared curl suite](../../test-cases.md) from the CLI during the port. All six profiles and the additional storage/recovery API checks apply; compilation or older unit tests alone do not establish upgraded parity.
-
-## DU-05 state and history
-
-Messages have stable UUIDs, UTC timestamps and a shared transcript sequence. Audit records consume the same counter, so retained message sequences remain unchanged and can have gaps after compaction. The model adapter uses a separate `WireMessage` projection. The public `Session` retains explicit nullable fields and defaults; write outboxes and ownership fields are private.
-
-`transcript.go` stages detached transcript and diagnostic outboxes. `history_store.go` persists transcript rows, active context references, recent diagnostic projections, immutable configuration anchors and the revision in one transaction. Active state reload uses a consistent SQL statement; `GET /sessions/{id}/transcript` and durable diagnostic pages retrieve archived records independently of recent state tails. Old snapshots are imported with an explicit history gap, not a completeness claim.
-
-The implementation and offline commands are in [du05-validation.md](du05-validation.md). DU-05 qualification remains pending until user-run controlled, PostgreSQL and service results are recorded. Complete commit acknowledgement/fencing, execution recovery, ownership/cancellation and the full history API remain assigned to subsequent work packages.
-
-## DU-09 selective hydration and pages
-
-`fetch` reads the hot snapshot, immutable config, active context references, active message rows, typed ledger, and bounded diagnostic tails in one PostgreSQL statement. It validates their revisions and identities before returning active state. The hot/public snapshot omits unbounded tool execution history; the engine reconstructs only execution rows referenced by active tool-call messages, while the execution API reads durable history by UUID cursor. Transcript, events, diagnostics, runs, executions, and archive receipts use separate cursor domains and return fixed watermarks where applicable. Retention planning is read-only and defaults to keep-all; abandoned-run listing does not replay work.
-
-The expanded API surface and the seven-cell PostgreSQL workload are documented in [du09-validation.md](du09-validation.md). That workload records logical JSON bytes and database/wall timings, checks active payload and revision stability, and logs query plans without changing production indexes. Controlled and SQL qualification remain pending until the user runs the commands against the configured PostgreSQL service.
-
-## DU-10 verified archives and explicit telemetry retention
-
-The default remains keep-all. `retention.go` exports canonical `sda-archive-1` JSONL from a read-only repeatable-read snapshot, verifies archive framing, table and row order, session identity, counts, watermarks, and SHA-256 digests, and supports explicit terminal-session telemetry pruning. The prune path requires a fresh matching revision, current database lease/fence, no active or unresolved execution, intact earlier archive dependencies, and matching event/diagnostic row digests. Receipt, state/event update, and telemetry deletes are part of one transaction. The service exposes only the read-only retention plan; Go admin subcommands perform explicit archive export and prune outside HTTP.
-
-See [du10-validation.md](du10-validation.md) for C01–C05, the export workload grid, shared CLI admin commands, and regression/full-suite commands. Qualification against the configured PostgreSQL database and live service remains pending until the user runs those commands.
+- `internal/agent/config.go`: YAML config loading, defaults, validation, hashing, and identity.
+- `internal/agent/engine.go`: run state machine, workflow, completion, tool execution, recovery, and compaction orchestration.
+- `internal/agent/context.go`: interaction grouping, request budgeting, ledger validation, and rendering.
+- `internal/agent/openai.go`: model request/response adapter and request diagnostics.
+- `internal/agent/transcript.go`: session normalization, message/audit sequencing, persistence outboxes, and diagnostic projections.
+- `internal/agent/recovery.go`: pluggable idempotent and reconciliation adapters.
+- `internal/agent/tools_postgres.go`: compiled-in fixture database tools.
+- `cmd/server/main.go`: HTTP routes, lifecycle handlers, and configuration discovery.
+- `cmd/server/history_store.go`: schema, transactional commit, history hydration, and paging.
+- `cmd/server/ownership.go`: leases, fencing, cancellation, and abandoned-run reconciliation.
+- `cmd/server/retention.go`: verified archive and explicit telemetry pruning.

@@ -7,7 +7,8 @@ Python, Go, Java and Rust implementations demonstrate the same language-independ
 | [contract.md](contract.md) | Required observable behavior, persistence and recovery contract |
 | [design_update.md](design_update.md) | Source-reviewed upgrade specification and per-language work packages for Go, Rust and Java |
 | [test-cases.md](test-cases.md) | Shared curl validation against any running implementation |
-| [Python architecture](agent-python/docs/architect.md) | Implemented service, schema, transactions, ownership and recovery |
+| [Python architecture](agent-python/docs/architecture.md) | Implemented service, diagrams, schema, transactions, ownership and recovery |
+| [Python implementation guide](agent-python/docs/implementation.md) | Source map, execution flow, persistence boundaries and HTTP routes |
 | [Compaction](agent-python/docs/compaction.md) | Implemented context/budget/summary/provenance algorithms |
 | [Operations](agent-python/docs/operations.md) | Python startup, dedicated PostgreSQL setup and administration |
 | [answers.md](answers.md) | Design answers and implementation/porting plan |

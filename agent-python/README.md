@@ -12,7 +12,7 @@ uv run --project agent-python uvicorn agent_python.api:app \
 
 Root `.env` supplies `MAIN_MODEL`, model endpoint and database settings. Model choice is unrestricted; existing sessions retain their resolved configuration. Shared YAML profiles live in root `config/`. The dedicated PostgreSQL database is `universal_state`; SQLite is unused.
 
-See [operations](docs/operations.md) for fresh database setup and administration, [architecture](docs/architect.md) and [compaction](docs/compaction.md) for current implementation details, and parent [test-cases.md](../test-cases.md) for curl-based validation against any running language implementation.
+See [operations](docs/operations.md) for fresh database setup and administration, [architecture](docs/architecture.md) and [implementation](docs/implementation.md) for runtime details, [compaction](docs/compaction.md) for context handling, and parent [test-cases.md](../test-cases.md) for curl-based validation against any running language implementation.
 
 ## Directory scope
 

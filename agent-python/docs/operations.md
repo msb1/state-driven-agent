@@ -1,6 +1,6 @@
 # Python operations and storage
 
-[Contract 1.1.0](../../contract.md) and [architecture](architect.md) describe semantics. All commands are user-run from the repository root. No database/model operations were performed during consolidation.
+[Contract 1.1.0](../../contract.md), [architecture](architecture.md), and the [implementation guide](implementation.md) describe service semantics and code boundaries. All commands are user-run from the repository root. No database/model operations were performed during consolidation.
 
 ## Fresh dedicated database
 

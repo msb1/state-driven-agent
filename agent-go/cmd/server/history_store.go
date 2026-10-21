@@ -376,7 +376,11 @@ func writeRunAndExecutions(ctx context.Context, tx pgx.Tx, state *agent.Session)
 		if state.ExecutionFence != nil {
 			fence = *state.ExecutionFence
 		}
-		if _, err = tx.Exec(ctx, `INSERT INTO agent_runs(session_id,run_id,status,owner,fence,started_at,ended_at,termination_reason,last_decision_step,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(session_id,run_id) DO UPDATE SET status=EXCLUDED.status,owner=EXCLUDED.owner,fence=EXCLUDED.fence,ended_at=EXCLUDED.ended_at,termination_reason=EXCLUDED.termination_reason,last_decision_step=EXCLUDED.last_decision_step,metadata=EXCLUDED.metadata`, state.ID, id, status, owner, fence, state.RunStartedAt, state.RunEndedAt, state.RunTerminationReason, state.StepCount, metadata); err != nil {
+		// A run's owner and fence identify the lease that started it. In
+		// particular, resume emits a status event before assigning a new run ID;
+		// that event still carries the previous run ID and must not rewrite its
+		// original fencing identity with the newly acquired lease.
+		if _, err = tx.Exec(ctx, `INSERT INTO agent_runs(session_id,run_id,status,owner,fence,started_at,ended_at,termination_reason,last_decision_step,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(session_id,run_id) DO UPDATE SET status=EXCLUDED.status,ended_at=EXCLUDED.ended_at,termination_reason=EXCLUDED.termination_reason,last_decision_step=EXCLUDED.last_decision_step,metadata=EXCLUDED.metadata`, state.ID, id, status, owner, fence, state.RunStartedAt, state.RunEndedAt, state.RunTerminationReason, state.StepCount, metadata); err != nil {
 			return err
 		}
 	}

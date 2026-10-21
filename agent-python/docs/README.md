@@ -4,7 +4,8 @@ These are the current operation and implementation guides.
 
 | Document | Purpose |
 | --- | --- |
-| [architect.md](architect.md) | Runtime modules, API lifecycle, schema, ownership, recovery and transaction boundaries |
+| [architecture.md](architecture.md) | Runtime modules, lifecycle and persistence diagrams, schema, ownership and transaction boundaries |
+| [implementation.md](implementation.md) | Source map, execution details, commit/hydration boundaries and HTTP routes |
 | [compaction.md](compaction.md) | Context assembly, budget protection, compaction algorithm and provenance |
 | [operations.md](operations.md) | Installation/startup, PostgreSQL initialization, inspection, recovery and retention |
 
