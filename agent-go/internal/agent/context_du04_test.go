@@ -47,7 +47,7 @@ func TestDU04BudgetUsesCompactUTF8WirePayload(t *testing.T) {
 	}
 }
 
-func TestDU04LedgerRejectsClaimsAndPreservesStrictShape(t *testing.T) {
+func TestDU04LedgerRejectsUnsupportedClaimsAndPreservesCompleteness(t *testing.T) {
 	goal := "Find the answer"
 	source := "verified count 83; answer is 12.5"
 	valid := "<COMPACTED_STATE><USER_GOAL>Find the answer</USER_GOAL><GLOBAL_LESSON_LEDGER>count 83</GLOBAL_LESSON_LEDGER><DEAD_ENDS>- None.</DEAD_ENDS><CURRENT_LOCAL_PIVOT>answer 12.50</CURRENT_LOCAL_PIVOT></COMPACTED_STATE>"
@@ -55,9 +55,19 @@ func TestDU04LedgerRejectsClaimsAndPreservesStrictShape(t *testing.T) {
 	if err != nil || ledger.SourceSHA256 == "" || canonical == "" {
 		t.Fatalf("valid ledger rejected: ledger=%+v err=%v", ledger, err)
 	}
+	nested := strings.Replace(valid, "count 83", "<lesson>count 83</lesson>", 1)
+	nested = strings.Replace(nested, "Find the answer", "Changed model goal", 1)
+	normalized, rendered, err := validateLedger("```xml\n"+nested+"\n```", goal, source, 4096, true)
+	if err != nil || normalized.Goal != goal || strings.Contains(rendered, "<lesson>") {
+		t.Fatalf("format normalization failed: %+v %s %v", normalized, rendered, err)
+	}
+	if _, _, err := validateLedger(valid[:len(valid)-10], goal, source, 4096, true); err == nil {
+		t.Fatal("accepted truncated summary")
+	}
+
 	for _, bad := range []string{
 		strings.Replace(valid, "answer 12.50", "answer 99", 1),
-		strings.Replace(valid, "</USER_GOAL>", "<extra>x</extra></USER_GOAL>", 1),
+		strings.Replace(valid, "</USER_GOAL>", "</USER_GOAL><USER_GOAL>duplicate</USER_GOAL>", 1),
 		strings.Replace(valid, "<DEAD_ENDS>", "<DEAD_ENDS bad=\"1\">", 1),
 	} {
 		if _, _, err := validateLedger(bad, goal, source, 4096, true); err == nil {
@@ -113,7 +123,7 @@ func TestDU04PayloadOrderPlacesArtifactsAndGuidanceAfterRawHistory(t *testing.T)
 	check := ResultCheck{Label: "table", Tool: "report", Kind: "markdown_table"}
 	cfg := Config{SystemPrompt: "SYSTEM", Completion: Completion{Instructions: str("REQUIREMENTS"), ResultChecks: []ResultCheck{check}}, Execution: Execution{ArgumentBindings: []Binding{{Tool: "validate", Argument: "result", SourceLabel: "table", Path: []any{}}}}, Workflow: &WorkflowConfig{Phases: []Phase{{ID: "p", Name: "Phase", Instruction: "GUIDANCE", AllowedTools: []string{}}}}}
 	e := Engine{Config: cfg}
-	artifact := CompletionArtifact{Tool: "report", Value: "| City | Count |\n| --- | ---: |\n| A | 1 |"}
+	artifact := CompletionArtifact{Tool: "report", Value: [][]string{{"City", "Count"}, {"A", "1"}}}
 	s := Session{Goal: goal, Memory: []Message{{Role: "user", Content: &goal}, {Role: "assistant", Content: str("raw-turn-content")}}, CompactedContext: str("LEDGER"), Workflow: &WorkflowState{ActivePhase: &phase}, CompletionArtifacts: map[string]CompletionArtifact{"0": artifact}}
 	p := e.payload(&s)
 	joined := ""
@@ -122,7 +132,7 @@ func TestDU04PayloadOrderPlacesArtifactsAndGuidanceAfterRawHistory(t *testing.T)
 			joined += *m.Content + "\n"
 		}
 	}
-	positions := []int{strings.Index(joined, "SYSTEM"), strings.Index(joined, "Original user goal"), strings.Index(joined, "REQUIREMENTS"), strings.Index(joined, "LEDGER"), strings.Index(joined, "EXECUTED RESULT ARTIFACT"), strings.Index(joined, "RAW WORKING BUFFER"), strings.Index(joined, "raw-turn-content"), strings.Index(joined, "KNOWN ARGUMENT BINDING"), strings.Index(joined, "GUIDANCE")}
+	positions := []int{strings.Index(joined, "SYSTEM"), strings.Index(joined, "Original user goal"), strings.Index(joined, "REQUIREMENTS"), strings.Index(joined, "LEDGER"), strings.Index(joined, "EXECUTED TOOL RESULT — REQUIRED FINAL DELIVERABLE"), strings.Index(joined, "RAW WORKING BUFFER"), strings.Index(joined, "raw-turn-content"), strings.Index(joined, "RESULT ARGUMENT BINDING"), strings.Index(joined, "GUIDANCE")}
 	for _, position := range positions {
 		if position < 0 {
 			t.Fatalf("missing payload section: %q", joined)

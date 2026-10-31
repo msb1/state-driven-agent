@@ -7,6 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/jackc/pgx/v5/pgconn"
+	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -17,70 +20,6 @@ import (
 	"github.com/state-driven-agent/agent-go/internal/agent"
 )
 
-const historyDDL = `
-ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 0;
-ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS last_commit_id UUID;
-ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS last_commit_sha256 TEXT;
-ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS lease_owner UUID;
-ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS lease_fence BIGINT NOT NULL DEFAULT 0;
-ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ;
-ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS storage_version INTEGER NOT NULL DEFAULT 6;
-CREATE TABLE IF NOT EXISTS agent_session_transcript (
- session_id UUID NOT NULL REFERENCES agent_sessions(session_id) ON DELETE CASCADE,
- sequence BIGINT NOT NULL CHECK(sequence>0), message_id UUID NOT NULL, kind TEXT NOT NULL,
- payload JSONB NOT NULL, run_id UUID, decision_step BIGINT NOT NULL CHECK(decision_step>=0),
- created_at TIMESTAMPTZ NOT NULL, recorded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
- PRIMARY KEY(session_id,sequence), UNIQUE(session_id,message_id));
-CREATE TABLE IF NOT EXISTS agent_session_context (
- session_id UUID PRIMARY KEY REFERENCES agent_sessions(session_id) ON DELETE CASCADE,
- revision BIGINT NOT NULL, goal_message_id UUID NOT NULL, ledger_record_id UUID,
- raw_message_ids JSONB NOT NULL CHECK(jsonb_typeof(raw_message_ids)='array'), ledger_state JSONB,
- FOREIGN KEY(session_id,goal_message_id) REFERENCES agent_session_transcript(session_id,message_id),
- FOREIGN KEY(session_id,ledger_record_id) REFERENCES agent_session_transcript(session_id,message_id));
-ALTER TABLE agent_session_context ADD COLUMN IF NOT EXISTS ledger_state JSONB;
-ALTER TABLE agent_session_context ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 0;
-CREATE TABLE IF NOT EXISTS agent_session_diagnostics (
- session_id UUID NOT NULL REFERENCES agent_sessions(session_id) ON DELETE CASCADE,
- family TEXT NOT NULL, ordinal BIGINT NOT NULL CHECK(ordinal>0), payload JSONB NOT NULL,
- PRIMARY KEY(session_id,family,ordinal));
-ALTER TABLE agent_session_events ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 0;
-ALTER TABLE agent_session_events ADD COLUMN IF NOT EXISTS commit_id UUID;
-CREATE UNIQUE INDEX IF NOT EXISTS agent_session_events_commit_idx ON agent_session_events(session_id,commit_id) WHERE commit_id IS NOT NULL;
-CREATE TABLE IF NOT EXISTS agent_runs (
- run_id UUID PRIMARY KEY, session_id UUID NOT NULL REFERENCES agent_sessions(session_id) ON DELETE CASCADE,
- owner UUID NOT NULL, fence BIGINT NOT NULL, status TEXT NOT NULL,
- started_at TIMESTAMPTZ NOT NULL, ended_at TIMESTAMPTZ, termination_reason TEXT,
- last_decision_step BIGINT NOT NULL, cancel_requested BOOLEAN NOT NULL DEFAULT false,
- cancel_requested_at TIMESTAMPTZ,
- metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
- UNIQUE(session_id,run_id));
-CREATE TABLE IF NOT EXISTS agent_tool_executions (
- execution_id UUID PRIMARY KEY, session_id UUID NOT NULL REFERENCES agent_sessions(session_id) ON DELETE CASCADE,
- run_id UUID NOT NULL, call_id TEXT NOT NULL, tool TEXT NOT NULL, arguments JSONB NOT NULL,
- policy JSONB NOT NULL, idempotency_key UUID NOT NULL, attempts INTEGER NOT NULL CHECK(attempts>=0),
- status TEXT NOT NULL CHECK(status IN ('pending','started','succeeded','failed','uncertain')),
- result TEXT, owner UUID NOT NULL, fence BIGINT NOT NULL,
- created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
- started_at TIMESTAMPTZ, finished_at TIMESTAMPTZ, payload JSONB NOT NULL DEFAULT '{}'::jsonb,
- UNIQUE(session_id,call_id),
- FOREIGN KEY(session_id,run_id) REFERENCES agent_runs(session_id,run_id),
- CHECK((status IN ('succeeded','failed')) = (result IS NOT NULL)));
-CREATE INDEX IF NOT EXISTS agent_tool_executions_recovery_idx ON agent_tool_executions(session_id,status,started_at);
-CREATE TABLE IF NOT EXISTS agent_session_calls (
- session_id UUID NOT NULL, call_id TEXT NOT NULL, message_id UUID NOT NULL,
- created_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY(session_id,call_id),
- FOREIGN KEY(session_id,message_id) REFERENCES agent_session_transcript(session_id,message_id) ON DELETE CASCADE);
-CREATE TABLE IF NOT EXISTS agent_archive_receipts (
- archive_id UUID PRIMARY KEY, session_id UUID NOT NULL REFERENCES agent_sessions(session_id) ON DELETE CASCADE,
- snapshot_revision BIGINT NOT NULL, sha256 TEXT NOT NULL, manifest JSONB NOT NULL,
- created_at TIMESTAMPTZ NOT NULL DEFAULT now());
-CREATE TABLE IF NOT EXISTS agent_schema_migrations (
- component TEXT NOT NULL, version INTEGER NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT now(),
- PRIMARY KEY(component,version));
-INSERT INTO agent_schema_migrations(component,version) VALUES ('agent-python',5),('agent-go',7) ON CONFLICT DO NOTHING;`
-
-type saveFaultHook func(stage string) error
-
 var ErrRevisionConflict = errors.New("session revision conflict")
 var ErrFencingConflict = errors.New("session fencing conflict")
 
@@ -90,33 +29,38 @@ func commitFingerprint(state agent.Session, configHash string, event any) (strin
 		return "", err
 	}
 	// Keep the exact ordered list preimage used by Python SessionRepository.save.
-	preimage := []any{hot, state.Memory, state.CompactedContext, state.CompactionLedger,
-		state.TranscriptPending, state.ExecutionPending, state.DiagnosticsPending,
-		state.RetentionPending, configHash, event}
-	raw, err := json.Marshal(preimage)
-	if err != nil {
-		return "", err
-	}
-	var sorted any
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.UseNumber()
-	if err = decoder.Decode(&sorted); err != nil {
-		return "", err
-	}
-	var out bytes.Buffer
-	encoder := json.NewEncoder(&out)
-	encoder.SetEscapeHTML(false)
-	if err = encoder.Encode(sorted); err != nil {
-		return "", err
-	}
-	b := bytes.TrimSuffix(out.Bytes(), []byte("\n"))
-	b = bytes.ReplaceAll(b, []byte(`\u2028`), []byte("\u2028"))
-	b = bytes.ReplaceAll(b, []byte(`\u2029`), []byte("\u2029"))
-	h := sha256.Sum256(b)
-	return fmt.Sprintf("%x", h[:]), nil
+	preimage := []any{"agent-commit-v2", state.ID, state.CommandID, state.Revision, hot, state.Memory, state.CompactedContext, state.CompactionLedger, state.TranscriptPending, map[string]any{"executions": state.ExecutionPending, "attempts": state.AttemptsPending}, state.DiagnosticsPending, state.RetentionPending, configHash, event}
+	return agent.DigestV2(preimage)
 }
 
 func (s *server) save(ctx context.Context, p *persisted, event any) error {
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		err = s.saveOnce(ctx, p, event)
+		if err == nil {
+			return nil
+		}
+		var network net.Error
+		if !errors.As(err, &network) && !errors.Is(err, io.EOF) && !pgconn.SafeToRetry(err) && !strings.Contains(err.Error(), "conn closed") {
+			return err
+		}
+	}
+	return err
+}
+func (s *server) saveOnce(ctx context.Context, p *persisted, event any) error {
+	c := currentCommand(ctx)
+	if c == nil {
+		return fmt.Errorf("durable command required for every save")
+	}
+	if p.State.NeedsReload {
+		return ErrRevisionConflict
+	}
+	p.State.CommandID = c.ID
+	p.State.DeploymentNamespace = c.Namespace
+	if mapped, ok := event.(map[string]any); ok {
+		mapped["command_id"] = c.ID
+		mapped["run_id"] = p.State.RunID
+	}
 	started := time.Now()
 	dbStarted := time.Time{}
 	snapshotBytes, writtenJSONBytes := 0, 0
@@ -134,6 +78,8 @@ func (s *server) save(ctx context.Context, p *persisted, event any) error {
 		id := uuid.NewString()
 		p.State.PendingCommitID = &id
 	}
+	agent.StageMessages(&p.State)
+	agent.StageDiagnostics(&p.State)
 	proposal := agent.Clone(p.State)
 	agent.StageMessages(&proposal)
 	agent.StageDiagnostics(&proposal)
@@ -159,9 +105,57 @@ func (s *server) save(ctx context.Context, p *persisted, event any) error {
 		return err
 	}
 	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `SELECT command_id FROM agent_commands WHERE command_id=$1 FOR UPDATE`, c.ID); err != nil {
+		return err
+	}
+	if c.Route == "/admin/reconcile" && proposal.RunCommandID != nil {
+		if _, err = tx.Exec(ctx, `SELECT command_id FROM agent_commands WHERE command_id=$1 FOR UPDATE`, *proposal.RunCommandID); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, `UPDATE agent_commands SET status='uncertain',owner=NULL,lease_expires_at=NULL,updated_at=clock_timestamp() WHERE command_id=$1 AND status IN ('pending','started') AND (owner IS NULL OR lease_expires_at<=clock_timestamp())`, *proposal.RunCommandID); err != nil {
+			return err
+		}
+	}
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,734910003))`, proposal.ID); err != nil {
+		return err
+	}
+	var receiptCommand, receiptHash string
+	var committed int64
+	err = tx.QueryRow(ctx, `SELECT command_id::text,fingerprint,committed_revision FROM agent_commit_receipts WHERE session_id=$1 AND commit_id=$2`, proposal.ID, *proposal.PendingCommitID).Scan(&receiptCommand, &receiptHash, &committed)
+	if err == nil {
+		if receiptCommand != c.ID || receiptHash != fingerprint {
+			return fmt.Errorf("commit identity reused with changed content")
+		}
+		var latest int64
+		if err = tx.QueryRow(ctx, `SELECT revision FROM agent_sessions WHERE session_id=$1`, proposal.ID).Scan(&latest); err != nil {
+			return err
+		}
+		proposal.Revision = committed
+		proposal.NeedsReload = latest != committed
+		proposal.TranscriptPending = nil
+		proposal.ExecutionPending = nil
+		proposal.AttemptsPending = nil
+		proposal.DiagnosticsPending = nil
+		proposal.RetentionPending = nil
+		proposal.PendingCommitID = nil
+		p.State = proposal
+		var commandStatus string
+		if e := tx.QueryRow(ctx, `SELECT status FROM agent_commands WHERE command_id=$1`, c.ID).Scan(&commandStatus); e == nil && (commandStatus == "succeeded" || commandStatus == "failed") {
+			c.mu.Lock()
+			c.completed = true
+			c.mu.Unlock()
+		}
+		return nil
+	}
+	if err != pgx.ErrNoRows {
+		return err
+	}
+	if err = s.guardCommand(ctx, tx, c); err != nil {
+		return err
+	}
 	initial, _ := json.Marshal(proposal)
 	writtenJSONBytes = len(initial) + len(p.Config)
-	inserted, err := tx.Exec(ctx, `INSERT INTO agent_sessions(session_id,state,config,config_ref,config_sha256) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING`, proposal.ID, initial, p.Config, proposal.ConfigRef, proposal.ConfigSHA256)
+	inserted, err := tx.Exec(ctx, `INSERT INTO agent_sessions(session_id,state,config,config_ref,config_sha256,resolved_config_sha256) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`, proposal.ID, initial, p.Config, proposal.ConfigRef, proposal.ConfigSHA256, identity)
 	if err != nil {
 		return err
 	}
@@ -226,34 +220,22 @@ func (s *server) save(ctx context.Context, p *persisted, event any) error {
 			writtenJSONBytes += len(encoded)
 		}
 	}
-	if _, err = tx.Exec(ctx, `UPDATE agent_sessions SET state=$2,revision=$3,last_commit_id=$4,last_commit_sha256=$5,storage_version=5,updated_at=now() WHERE session_id=$1`, proposal.ID, snapshot, proposal.Revision, *proposal.PendingCommitID, fingerprint); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE agent_sessions SET state=$2,revision=$3,last_commit_id=$4,last_commit_sha256=$5,storage_version=6,updated_at=now() WHERE session_id=$1`, proposal.ID, snapshot, proposal.Revision, *proposal.PendingCommitID, fingerprint); err != nil {
 		return err
 	}
-	if err = s.injectSaveFault("snapshot"); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE agent_commands SET session_id=$2 WHERE command_id=$1 AND (session_id IS NULL OR session_id=$2)`, c.ID, proposal.ID); err != nil {
 		return err
 	}
 	if err = writeTranscript(ctx, tx, &proposal); err != nil {
 		return err
 	}
-	if err = s.injectSaveFault("transcript"); err != nil {
-		return err
-	}
 	if err = writeCallMap(ctx, tx, &proposal); err != nil {
-		return err
-	}
-	if err = s.injectSaveFault("call_map"); err != nil {
 		return err
 	}
 	if err = writeDiagnostics(ctx, tx, &proposal); err != nil {
 		return err
 	}
-	if err = s.injectSaveFault("diagnostics"); err != nil {
-		return err
-	}
 	if err = writeRunAndExecutions(ctx, tx, &proposal); err != nil {
-		return err
-	}
-	if err = s.injectSaveFault("run_tool"); err != nil {
 		return err
 	}
 	if event != nil {
@@ -261,29 +243,18 @@ func (s *server) save(ctx context.Context, p *persisted, event any) error {
 		if e != nil {
 			return e
 		}
-		if _, err = tx.Exec(ctx, `INSERT INTO agent_session_events(session_id,event,revision,commit_id) VALUES($1,$2,$3,$4)`, proposal.ID, b, proposal.Revision, *proposal.PendingCommitID); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO agent_session_events(session_id,event,revision,commit_id,command_id) VALUES($1,$2,$3,$4,$5)`, proposal.ID, b, proposal.Revision, *proposal.PendingCommitID, c.ID); err != nil {
 			return err
 		}
 	}
-	if err = s.injectSaveFault("event"); err != nil {
+	if err = writeActionAttempts(ctx, tx, &proposal); err != nil {
 		return err
 	}
 	if err = writeContext(ctx, tx, &proposal); err != nil {
 		return err
 	}
-	if err = s.injectSaveFault("context"); err != nil {
-		return err
-	}
 	if err = writeRetention(ctx, tx, &proposal); err != nil {
 		return err
-	}
-	if err = s.injectSaveFault("retention"); err != nil {
-		return err
-	}
-	if emitted, ok := event.(map[string]any); ok && emitted["type"] == "final_result" {
-		if err = s.injectSaveFault("terminal_commit"); err != nil {
-			return err
-		}
 	}
 	var ownerStill *string
 	var fenceStill int64
@@ -294,21 +265,69 @@ func (s *server) save(ctx context.Context, p *persisted, event any) error {
 	if !unexpired || fenceStill != leaseFence || !equalJSON(ownerStill, leaseOwner) {
 		return ErrFencingConflict
 	}
+	if _, err = tx.Exec(ctx, `INSERT INTO agent_commit_receipts(session_id,commit_id,command_id,fingerprint,expected_revision,committed_revision) VALUES($1,$2,$3,$4,$5,$6)`, proposal.ID, *proposal.PendingCommitID, c.ID, fingerprint, proposal.Revision-1, proposal.Revision); err != nil {
+		return err
+	}
+	terminal := false
+	eventType := ""
+	if m, ok := event.(map[string]any); ok {
+		eventType, _ = m["type"].(string)
+	}
+	terminal = eventType == "session_created" || eventType == "user_message_appended" || eventType == "run_finished" || proposal.RetentionPending != nil || c.Route == "/admin/reconcile"
+	if terminal && (proposal.RunStatus == "blocked" || (proposal.RunStatus == "interrupted" && len(proposal.PendingToolCalls) > 0)) {
+		outcome := "uncertain"
+		if proposal.RunStatus == "blocked" {
+			outcome = "blocked"
+		}
+		if err = s.guardCommand(ctx, tx, c); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, `UPDATE agent_commands SET status=$2,owner=NULL,lease_expires_at=NULL,updated_at=clock_timestamp() WHERE command_id=$1`, c.ID, outcome); err != nil {
+			return err
+		}
+	} else if terminal {
+		status := 200
+		message := any("Run stopped.")
+		if proposal.FinalAnswer != nil {
+			message = *proposal.FinalAnswer
+		}
+		if eventType == "session_created" {
+			status = 201
+			message = "Session created with immutable config " + proposal.ConfigRef + "@" + proposal.ConfigSHA256[:12] + "."
+		}
+		if eventType == "user_message_appended" {
+			message = "User input appended to session memory."
+		}
+		outcome := "succeeded"
+		if proposal.Status == "failed" {
+			outcome = "failed"
+		}
+		if err = s.completeCommand(ctx, tx, c, status, map[string]any{"session": proposal, "message": message}, outcome); err != nil {
+			return err
+		}
+	}
+	if !terminal {
+		if err = s.guardCommand(ctx, tx, c); err != nil {
+			return err
+		}
+	}
 	if err = tx.Commit(ctx); err != nil {
 		return err
 	}
-	if err = s.injectSaveFault("commit_ack"); err != nil {
-		return err
-	}
 	proposal.TranscriptPending, proposal.DiagnosticsPending, proposal.ExecutionPending, proposal.RetentionPending, proposal.PendingCommitID = nil, nil, nil, nil, nil
-	p.State = proposal
-	return nil
-}
-
-func (s *server) injectSaveFault(stage string) error {
-	if s.saveFault != nil {
-		return s.saveFault(stage)
+	proposal.AttemptsPending = nil
+	if terminal {
+		c.mu.Lock()
+		c.completed = true
+		c.mu.Unlock()
 	}
+	if m, ok := event.(map[string]any); ok {
+		var id int64
+		if e := s.db.QueryRow(ctx, `SELECT event_id FROM agent_session_events WHERE session_id=$1 AND commit_id=$2`, proposal.ID, p.State.PendingCommitID).Scan(&id); e == nil {
+			m["event_id"] = id
+		}
+	}
+	p.State = proposal
 	return nil
 }
 
@@ -331,11 +350,11 @@ func writeCallMap(ctx context.Context, tx pgx.Tx, state *agent.Session) error {
 			if id == "" {
 				return fmt.Errorf("tool call is missing its identity")
 			}
-			if _, err := tx.Exec(ctx, `INSERT INTO agent_session_calls(session_id,call_id,message_id) VALUES($1,$2,$3) ON CONFLICT(session_id,call_id) DO NOTHING`, state.ID, id, entry.MessageID); err != nil {
+			if _, err := tx.Exec(ctx, `INSERT INTO agent_session_calls(session_id,call_id,message_id) VALUES($1,$2,$3) ON CONFLICT DO NOTHING`, state.ID, id, entry.MessageID); err != nil {
 				return err
 			}
 			var same bool
-			if err := tx.QueryRow(ctx, `SELECT message_id=$3 FROM agent_session_calls WHERE session_id=$1 AND call_id=$2`, state.ID, id, entry.MessageID).Scan(&same); err != nil || !same {
+			if err := tx.QueryRow(ctx, `SELECT COALESCE(bool_and(message_id=$3),false) FROM agent_session_calls WHERE session_id=$1 AND call_id=$2`, state.ID, id, entry.MessageID).Scan(&same); err != nil || !same {
 				return fmt.Errorf("tool call identity collision")
 			}
 		}
@@ -380,7 +399,7 @@ func writeRunAndExecutions(ctx context.Context, tx pgx.Tx, state *agent.Session)
 		// particular, resume emits a status event before assigning a new run ID;
 		// that event still carries the previous run ID and must not rewrite its
 		// original fencing identity with the newly acquired lease.
-		if _, err = tx.Exec(ctx, `INSERT INTO agent_runs(session_id,run_id,status,owner,fence,started_at,ended_at,termination_reason,last_decision_step,metadata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(session_id,run_id) DO UPDATE SET status=EXCLUDED.status,ended_at=EXCLUDED.ended_at,termination_reason=EXCLUDED.termination_reason,last_decision_step=EXCLUDED.last_decision_step,metadata=EXCLUDED.metadata`, state.ID, id, status, owner, fence, state.RunStartedAt, state.RunEndedAt, state.RunTerminationReason, state.StepCount, metadata); err != nil {
+		if _, err = tx.Exec(ctx, `INSERT INTO agent_runs(session_id,run_id,status,owner,fence,started_at,ended_at,termination_reason,last_decision_step,metadata,command_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT(session_id,run_id) DO UPDATE SET status=EXCLUDED.status,ended_at=EXCLUDED.ended_at,termination_reason=EXCLUDED.termination_reason,last_decision_step=EXCLUDED.last_decision_step,metadata=EXCLUDED.metadata`, state.ID, id, status, owner, fence, state.RunStartedAt, state.RunEndedAt, state.RunTerminationReason, state.StepCount, metadata, state.RunCommandID); err != nil {
 			return err
 		}
 	}
@@ -408,66 +427,7 @@ func writeRunAndExecutions(ctx context.Context, tx pgx.Tx, state *agent.Session)
 		if tool == "" {
 			tool = get("tool_name") // Accept snapshots written by pre-contract Go builds.
 		}
-		if err = persistToolExecution(ctx, tx, state, get("execution_id"), get("call_id"), tool, fields["arguments"], fields["policy"], get("idempotency_key"), attempts, get("status"), fields["result"], fields["started_at"], fields["finished_at"], b); err != nil {
-			return err
-		}
-	}
-	// A completed tool message is the durable outcome even when the adapter's
-	// execution outbox was not reconstructed from an older snapshot.
-	for _, entry := range state.TranscriptPending {
-		if entry.Kind != "message" {
-			continue
-		}
-		role, _ := entry.Payload["role"].(string)
-		if role != "tool" {
-			continue
-		}
-		callID, _ := entry.Payload["tool_call_id"].(string)
-		if callID == "" {
-			return fmt.Errorf("tool result is missing its call identity")
-		}
-		if stagedExecutionCalls[callID] {
-			continue
-		}
-		var executionExists bool
-		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM agent_tool_executions WHERE session_id=$1 AND call_id=$2)`, state.ID, callID).Scan(&executionExists); err != nil {
-			return err
-		}
-		if executionExists {
-			continue
-		}
-		tool, _ := entry.Payload["name"].(string)
-		var args any
-		for _, candidate := range state.TranscriptPending {
-			if candidate.Kind != "message" {
-				continue
-			}
-			calls, _ := candidate.Payload["tool_calls"].([]any)
-			for _, rawCall := range calls {
-				call, _ := rawCall.(map[string]any)
-				if call["id"] != callID {
-					continue
-				}
-				function, _ := call["function"].(map[string]any)
-				if name, ok := function["name"].(string); ok {
-					tool = name
-				}
-				if raw, ok := function["arguments"].(string); ok {
-					var decoded any
-					if json.Unmarshal([]byte(raw), &decoded) == nil {
-						args = decoded
-					}
-				}
-			}
-		}
-		content, _ := entry.Payload["content"].(string)
-		status := "succeeded"
-		if strings.HasPrefix(content, "ERROR:") || strings.HasPrefix(content, "AssertionError:") {
-			status = "failed"
-		}
-		payload, _ := json.Marshal(map[string]any{"source": "transcript", "call_id": callID, "tool": tool, "arguments": args, "status": status, "result": content})
-		started, finished := entry.CreatedAt, entry.CreatedAt
-		if err := persistToolExecution(ctx, tx, state, uuid.NewSHA1(uuid.NameSpaceURL, []byte(state.ID+"/"+callID)).String(), callID, tool, args, map[string]any{"source": "transcript"}, "", 1, status, content, started, finished, payload); err != nil {
+		if err = persistToolExecution(ctx, tx, state, get("execution_id"), get("call_id"), tool, fields["arguments"], fields["policy"], get("idempotency_key"), attempts, get("status"), fields["result"], fields["started_at"], fields["finished_at"], fields); err != nil {
 			return err
 		}
 	}
@@ -513,6 +473,10 @@ func persistToolExecution(ctx context.Context, tx pgx.Tx, state *agent.Session, 
 	if err != nil {
 		return err
 	}
+	var metadata map[string]any
+	if err = json.Unmarshal(payloadJSON, &metadata); err != nil {
+		return err
+	}
 	resultText := any(nil)
 	if result != nil {
 		if text, ok := result.(string); ok {
@@ -541,11 +505,21 @@ func persistToolExecution(ctx context.Context, tx pgx.Tx, state *agent.Session, 
 		fence = *state.ExecutionFence
 	}
 	var existingStatus, existingID, existingTool, existingKey string
+	var frozenMetadata []byte
 	var existingResult *string
 	var existingArgs, existingPolicy []byte
 	var existingAttempts int
-	err = tx.QueryRow(ctx, `SELECT status,result,attempts,execution_id::text,tool,arguments,policy,COALESCE(idempotency_key::text,'') FROM agent_tool_executions WHERE session_id=$1 AND call_id=$2 FOR UPDATE`, state.ID, callID).Scan(&existingStatus, &existingResult, &existingAttempts, &existingID, &existingTool, &existingArgs, &existingPolicy, &existingKey)
+	err = tx.QueryRow(ctx, `SELECT status,result,attempts,execution_id::text,tool,arguments,policy,COALESCE(idempotency_key::text,''),jsonb_build_object('command_id',command_id,'namespace',namespace,'target',target,'payload_sha256',payload_sha256,'key_algorithm',key_algorithm,'run_id',run_id) FROM agent_tool_executions WHERE session_id=$1 AND call_id=$2 FOR UPDATE`, state.ID, callID).Scan(&existingStatus, &existingResult, &existingAttempts, &existingID, &existingTool, &existingArgs, &existingPolicy, &existingKey, &frozenMetadata)
 	if err == nil {
+		var frozen map[string]any
+		if err = json.Unmarshal(frozenMetadata, &frozen); err != nil {
+			return err
+		}
+		for _, field := range []string{"command_id", "namespace", "target", "payload_sha256", "key_algorithm", "run_id"} {
+			if !equalJSON(frozen[field], metadata[field]) {
+				return fmt.Errorf("frozen action %s changed", field)
+			}
+		}
 		if existingID != executionID || existingTool != tool || existingKey != key || !sameJSONBytes(existingArgs, argJSON) || !sameJSONBytes(existingPolicy, policyJSON) || attempts < existingAttempts || attempts > existingAttempts+1 {
 			return fmt.Errorf("tool execution identity, policy, or attempt count changed")
 		}
@@ -562,9 +536,9 @@ func persistToolExecution(ctx context.Context, tx pgx.Tx, state *agent.Session, 
 		return err
 	}
 	if key == "" {
-		key = uuid.NewSHA1(uuid.NameSpaceURL, []byte(state.ID+"/"+callID+"/idempotency")).String()
+		return fmt.Errorf("frozen schema-6 action key required")
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO agent_tool_executions(session_id,execution_id,run_id,call_id,tool,arguments,policy,idempotency_key,attempts,status,result,owner,fence,started_at,finished_at,payload) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, state.ID, eid, runID, callID, tool, argJSON, policyJSON, key, attempts, status, resultText, owner, fence, started, finished, payloadJSON)
+	_, err = tx.Exec(ctx, `INSERT INTO agent_tool_executions(session_id,execution_id,run_id,call_id,tool,arguments,policy,idempotency_key,attempts,status,result,owner,fence,started_at,finished_at,payload,command_id,namespace,target,payload_sha256,key_algorithm) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,'agent-action-v1')`, state.ID, eid, runID, callID, tool, argJSON, policyJSON, key, attempts, status, resultText, owner, fence, started, finished, payloadJSON, metadata["command_id"], metadata["namespace"], metadata["target"], metadata["payload_sha256"])
 	return err
 }
 
@@ -611,7 +585,7 @@ func writeRetention(ctx context.Context, tx pgx.Tx, state *agent.Session) error 
 			return fmt.Errorf("retention requires a terminal owned session and matching exported revision")
 		}
 		var unresolved, running int64
-		if err = tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM agent_tool_executions WHERE session_id=$1 AND status IN ('pending','started','uncertain')),(SELECT count(*) FROM agent_runs WHERE session_id=$1 AND status='running')`, state.ID).Scan(&unresolved, &running); err != nil {
+		if err = tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM agent_tool_executions WHERE session_id=$1 AND status IN ('pending','started','uncertain','blocked')),(SELECT count(*) FROM agent_runs WHERE session_id=$1 AND status='running')`, state.ID).Scan(&unresolved, &running); err != nil {
 			return err
 		}
 		if unresolved != 0 || running != 0 {
@@ -923,7 +897,7 @@ func writeDiagnostics(ctx context.Context, tx pgx.Tx, state *agent.Session) erro
 }
 
 // One MVCC statement hydrates each state, context, active message and ledger revision.
-const hydrateHistory = `SELECT s.state,s.config,s.revision,c.revision,
+const hydrateHistory = `SELECT s.state,s.config,s.config_ref,s.config_sha256,s.revision,c.revision,
  (SELECT jsonb_agg(t.payload || jsonb_build_object('message_id',t.message_id::text,'sequence',t.sequence,'created_at',t.created_at) ORDER BY ids.ord)
   FROM jsonb_array_elements_text(jsonb_build_array(c.goal_message_id::text)||c.raw_message_ids) WITH ORDINALITY ids(id,ord)
   JOIN agent_session_transcript t ON t.session_id=s.session_id AND t.message_id=ids.id::uuid AND t.kind='message'),
@@ -944,12 +918,12 @@ func (s *server) fetch(ctx context.Context, id string, forExecution ...bool) (pe
 	}
 	id = parsed.String()
 	var raw, messages, ledger, typed, diagnostics, rawIDs []byte
-	var goalID, ledgerID, ledgerKind *string
+	var goalID, ledgerID, ledgerKind, configRef, configSHA256 *string
 	var revision int64
 	var contextRevision *int64
 	databaseDuration := time.Duration(0)
 	queryStarted := time.Now()
-	err := s.db.QueryRow(ctx, hydrateHistory, id).Scan(&raw, &p.Config, &revision, &contextRevision, &messages, &ledger, &typed, &goalID, &rawIDs, &ledgerID, &ledgerKind, &diagnostics)
+	err := s.db.QueryRow(ctx, hydrateHistory, id).Scan(&raw, &p.Config, &configRef, &configSHA256, &revision, &contextRevision, &messages, &ledger, &typed, &goalID, &rawIDs, &ledgerID, &ledgerKind, &diagnostics)
 	databaseDuration += time.Since(queryStarted)
 	if err != nil {
 		return p, err
@@ -960,43 +934,11 @@ func (s *server) fetch(ctx context.Context, id string, forExecution ...bool) (pe
 	if p.State.ID != id {
 		return p, fmt.Errorf("snapshot identity differs from session row")
 	}
+	if (configRef != nil && p.State.ConfigRef != *configRef) || (configSHA256 != nil && p.State.ConfigSHA256 != *configSHA256) {
+		return p, fmt.Errorf("snapshot configuration anchors differ from session row")
+	}
 	if contextRevision == nil {
-		// Import only the surviving old projection; never claim lost compacted history is complete.
-		p.State.Revision = revision
-		p.State.HistoryComplete = false
-		p.State.DiagnosticHistoryComplete = true
-		p.State.CompactionSavingsKnown = false
-		agent.StageMessages(&p.State)
-		if !p.State.HistoryComplete {
-			agent.ArchiveRecord(&p.State, "history_gap", map[string]any{"reason": "Complete pre-journal history unavailable; only retained snapshot messages imported"})
-		}
-		p.State.ActiveLedgerID = nil
-		for _, text := range p.State.CompactionEvents {
-			payload := map[string]any{"content": text, "source_history_unavailable": true}
-			if p.State.CompactedContext != nil && text == *p.State.CompactedContext {
-				payload["ledger"] = p.State.CompactionLedger
-			}
-			entry := agent.ArchiveRecord(&p.State, "legacy_summary", payload)
-			if p.State.CompactedContext != nil && text == *p.State.CompactedContext {
-				p.State.ActiveLedgerID = &entry.MessageID
-			}
-		}
-		if p.State.CompactedContext != nil && p.State.ActiveLedgerID == nil {
-			entry := agent.ArchiveRecord(&p.State, "legacy_summary", map[string]any{"content": *p.State.CompactedContext, "ledger": p.State.CompactionLedger, "source_history_unavailable": true})
-			p.State.ActiveLedgerID = &entry.MessageID
-		}
-		if err = s.save(ctx, &p, nil); err != nil {
-			return p, err
-		}
-		if loadRunExecutions {
-			queryStarted = time.Now()
-			if err = s.loadExecutions(ctx, &p.State); err != nil {
-				return p, err
-			}
-			databaseDuration += time.Since(queryStarted)
-		}
-		s.recordHydrationSample(started, databaseDuration, raw, p.Config, messages, ledger, typed, diagnostics, rawIDs, p.State)
-		return p, nil
+		return p, fmt.Errorf("active session context is missing; automatic legacy import is disabled")
 	}
 	if p.State.Revision != revision || *contextRevision != revision {
 		return p, fmt.Errorf("state/context revision mismatch")
@@ -1006,6 +948,40 @@ func (s *server) fetch(ctx context.Context, id string, forExecution ...bool) (pe
 	}
 	for i := range p.State.Memory {
 		p.State.Memory[i].CreatedAt = p.State.Memory[i].CreatedAt.UTC()
+	}
+	// created_at and the other immutable message fields are hydrated from the
+	// transcript table. Compare them with the independently persisted hot
+	// snapshot anchor before trusting this projection; comparing only against
+	// the just-hydrated Message would bless a timestamp tampered in that table.
+	var snapshot map[string]json.RawMessage
+	if err = json.Unmarshal(raw, &snapshot); err != nil {
+		return p, err
+	}
+	if encodedIdentity, ok := snapshot["_active_message_identity_sha256"]; ok {
+		var expectedIdentity string
+		if err = json.Unmarshal(encodedIdentity, &expectedIdentity); err != nil {
+			return p, fmt.Errorf("invalid active message identity anchor: %w", err)
+		}
+		actualIdentity, identityErr := agent.ActiveMessageIdentity(p.State.Memory)
+		if identityErr != nil {
+			return p, identityErr
+		}
+		if expectedIdentity == "" || expectedIdentity != actualIdentity {
+			return p, fmt.Errorf("active transcript message identity differs from snapshot anchor")
+		}
+	}
+	if encodedIdentity, ok := snapshot["_session_integrity_sha256"]; ok {
+		var expectedIdentity string
+		if err = json.Unmarshal(encodedIdentity, &expectedIdentity); err != nil {
+			return p, fmt.Errorf("invalid session integrity anchor: %w", err)
+		}
+		actualIdentity, identityErr := agent.SessionIntegrityIdentity(p.State)
+		if identityErr != nil {
+			return p, identityErr
+		}
+		if expectedIdentity == "" || expectedIdentity != actualIdentity {
+			return p, fmt.Errorf("snapshot session anchors differ from integrity anchor")
+		}
 	}
 	if len(ledger) > 0 {
 		var value struct {
@@ -1121,7 +1097,7 @@ func (s *server) loadExecutions(ctx context.Context, state *agent.Session) error
 	if len(callIDs) == 0 {
 		return nil
 	}
-	rows, err := s.db.Query(ctx, `SELECT execution_id::text,COALESCE(run_id::text,''),call_id,tool,arguments,policy,COALESCE(idempotency_key::text,''),attempts,COALESCE(owner::text,''),fence,status,result,started_at,finished_at FROM agent_tool_executions WHERE session_id=$1 AND call_id=ANY($2::text[]) ORDER BY execution_id`, state.ID, callIDs)
+	rows, err := s.db.Query(ctx, `SELECT execution_id::text,COALESCE(run_id::text,''),call_id,tool,arguments,policy,COALESCE(idempotency_key::text,''),attempts,COALESCE(owner::text,''),fence,status,result,started_at,finished_at,command_id::text,namespace,target,payload_sha256,key_algorithm,(SELECT COALESCE(max(attempt_number),0) FROM agent_action_attempts a WHERE a.execution_id=agent_tool_executions.execution_id) FROM agent_tool_executions WHERE session_id=$1 AND call_id=ANY($2::text[]) ORDER BY execution_id`, state.ID, callIDs)
 	if err != nil {
 		return err
 	}
@@ -1129,7 +1105,7 @@ func (s *server) loadExecutions(ctx context.Context, state *agent.Session) error
 	for rows.Next() {
 		var execution agent.ToolExecution
 		var args, policy, result []byte
-		if err = rows.Scan(&execution.ExecutionID, &execution.RunID, &execution.CallID, &execution.Tool, &args, &policy, &execution.IdempotencyKey, &execution.Attempts, &execution.OwnerID, &execution.Fence, &execution.Status, &result, &execution.StartedAt, &execution.FinishedAt); err != nil {
+		if err = rows.Scan(&execution.ExecutionID, &execution.RunID, &execution.CallID, &execution.Tool, &args, &policy, &execution.IdempotencyKey, &execution.Attempts, &execution.OwnerID, &execution.Fence, &execution.Status, &result, &execution.StartedAt, &execution.FinishedAt, &execution.CommandID, &execution.Namespace, &execution.Target, &execution.PayloadSHA256, &execution.KeyAlgorithm, &execution.AttemptNumber); err != nil {
 			return err
 		}
 		if err = json.Unmarshal(args, &execution.Arguments); err != nil {

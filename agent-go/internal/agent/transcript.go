@@ -313,7 +313,50 @@ func (s Session) HotSnapshot() (map[string]any, error) {
 	for _, key := range []string{"transcript_pending", "pending_commit_id", "memory", "compacted_context", "compaction_ledger", "ledger_state", "compaction_events", "compaction_attempts", "compaction_decisions", "diagnostics_complete"} {
 		delete(result, key)
 	}
+	identity, err := ActiveMessageIdentity(s.Memory)
+	if err != nil {
+		return nil, err
+	}
+	result["_active_message_identity_sha256"] = identity
+	sessionIdentity, err := SessionIntegrityIdentity(s)
+	if err != nil {
+		return nil, err
+	}
+	result["_session_integrity_sha256"] = sessionIdentity
 	return result, err
+}
+
+// ActiveMessageIdentity fingerprints the bounded active message projection,
+// including immutable metadata such as created_at. The fingerprint is stored
+// beside the hot snapshot so hydration can compare the transcript rows against
+// an independent value instead of trusting metadata read from those same rows.
+func ActiveMessageIdentity(messages []Message) (string, error) {
+	b, err := json.Marshal(messages)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(b)
+	return fmt.Sprintf("%x", digest[:]), nil
+}
+
+// SessionIntegrityIdentity binds immutable session anchors and the transcript
+// watermark to the persisted snapshot. This detects out-of-band edits to the
+// snapshot counter even when a matching transcript row was inserted alongside it.
+func SessionIntegrityIdentity(s Session) (string, error) {
+	anchors := struct {
+		ID                     string `json:"id"`
+		Goal                   string `json:"goal"`
+		ConfigRef              string `json:"config_ref"`
+		ConfigSHA256           string `json:"config_sha256"`
+		ResolvedConfigSHA256   string `json:"resolved_config_sha256"`
+		NextTranscriptSequence int64  `json:"next_transcript_sequence"`
+	}{s.ID, s.Goal, s.ConfigRef, s.ConfigSHA256, s.ResolvedConfigSHA256, s.NextTranscriptSequence}
+	b, err := json.Marshal(anchors)
+	if err != nil {
+		return "", err
+	}
+	digest := sha256.Sum256(b)
+	return fmt.Sprintf("%x", digest[:]), nil
 }
 func RecordDiagnostic(s *Session, family string, payload any) {
 	NormalizeSession(s)

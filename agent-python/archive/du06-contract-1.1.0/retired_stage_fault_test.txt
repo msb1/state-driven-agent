@@ -1,0 +1,50 @@
+Historical native stage-fault test retired with the contract-1.1.0 DU-06 matrix.
+Formerly a method in agent-python/tests/test_contract_v2_runtime.py.
+It depended on PostgreSQL trigger injection, which is not part of current shared qualification.
+
+    async def test_database_faults_roll_back_every_aggregate_write_family(self):
+        from agent_python.commands import command_scope
+        from agent_python.execution import ExecutionCoordinator,utcnow
+        from agent_python.models import Message
+        from agent_python.transcript import append_message
+        from agent_python.storage_state import record_diagnostic
+        from agent_python.identity import action_key,payload_fingerprint
+        from postgres_faults import fail_after_write
+        stages = ['agent_sessions','agent_session_transcript','agent_session_calls','agent_session_diagnostics',
+                  'agent_runs','agent_tool_executions','agent_action_attempts','agent_session_events',
+                  'agent_session_context','agent_commit_receipts']
+        for table in stages:
+            with self.subTest(table=table):
+                sid = await self.create()
+                persisted = await self.repo.get(sid)
+                row = await self.repo.commands.register(str(uuid4()),f'/sessions/{sid}/run',{'max_steps':1},{'session_id':sid})
+                command = await self.repo.commands.claim(row)
+                async with command_scope(self.repo.commands,command):
+                    async with ExecutionCoordinator(self.repo,persisted.state,persisted.config) as owner:
+                        state = persisted.state
+                        state.run_id,state.run_command_id = str(uuid4()),command.id
+                        state.run_status,state.run_started_at = 'running',utcnow()
+                        call_id,eid = 'call-'+uuid4().hex,str(uuid4())
+                        args = {'start_line':1,'line_count':1}
+                        append_message(state,Message(role='assistant',tool_calls=[{'id':call_id,'type':'function','function':{'name':'inspect_log','arguments':json.dumps(args)}}]))
+                        state.pending_tool_calls = [{'id':call_id,'name':'inspect_log','arguments':args}]
+                        item = {'execution_id':eid,'run_id':state.run_id,'command_id':command.id,'namespace':command.namespace,
+                            'call_id':call_id,'tool':'inspect_log','target':'tool://inspect_log','arguments':args,
+                            'policy':{'mode':'read_only','max_attempts':2},'attempts':1,'status':'started','result':None,
+                            'key_algorithm':'agent-action-v1','idempotency_key':action_key(command.namespace,sid,eid),
+                            'payload_sha256':payload_fingerprint('inspect_log','tool://inspect_log',args)}
+                        state.execution_pending.append(item)
+                        state.attempts_pending.append({'attempt_id':str(uuid4()),'execution_id':eid,'command_id':command.id,
+                            'attempt_number':1,'kind':'dispatch','status':'started','payload_sha256':item['payload_sha256'],
+                            'owner':owner.owner,'fence':owner.fence,'started_at':utcnow().isoformat()})
+                        record_diagnostic(state,'compaction_decisions',{'reason':'rollback fixture'})
+                        before = {name:await self.rows(f'SELECT to_jsonb(t) FROM {name} t WHERE session_id=%s ORDER BY to_jsonb(t)::text',(sid,)) for name in stages}
+                        with fail_after_write(self.dsn,self.schema,table,sid) as hits:
+                            with self.assertRaises(psycopg.errors.RaiseException):
+                                await self.repo.save(state,persisted.config,{'type':'rollback_fixture'})
+                            self.assertEqual(hits(),1,'Fault did not reach the intended database family')
+                        after = {name:await self.rows(f'SELECT to_jsonb(t) FROM {name} t WHERE session_id=%s ORDER BY to_jsonb(t)::text',(sid,)) for name in stages}
+                        self.assertEqual(after,before)
+                        self.assertEqual(state.revision,1)
+                        self.assertTrue(state.pending_commit_id)
+                        self.assertTrue(state.transcript_pending and state.execution_pending and state.attempts_pending and state.diagnostics_pending)

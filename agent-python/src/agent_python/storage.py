@@ -1,4 +1,4 @@
-"""Schema-5 storage, consistent selective hydration, telemetry and audit pages."""
+"""Schema-6 storage, consistent selective hydration, telemetry and audit pages."""
 import hashlib
 import json
 import time
@@ -6,29 +6,15 @@ import psycopg
 from psycopg.rows import dict_row
 from .models import SessionState
 from .storage_state import FAMILIES, RECENT, hot_snapshot, stage_diagnostics
-
-DDL = [
-    'ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS storage_version INTEGER NOT NULL DEFAULT 4',
-    'ALTER TABLE agent_session_context ADD COLUMN IF NOT EXISTS ledger_state JSONB',
-    '''CREATE TABLE IF NOT EXISTS agent_session_diagnostics (
-        session_id UUID NOT NULL REFERENCES agent_sessions(session_id) ON DELETE CASCADE,
-        family TEXT NOT NULL, ordinal BIGINT NOT NULL CHECK(ordinal>0),payload JSONB NOT NULL,
-        PRIMARY KEY(session_id,family,ordinal))''',
-    '''CREATE TABLE IF NOT EXISTS agent_session_calls (
-        session_id UUID NOT NULL,call_id TEXT NOT NULL,message_id UUID NOT NULL,
-        PRIMARY KEY(session_id,call_id,message_id),
-        FOREIGN KEY(session_id,message_id) REFERENCES agent_session_transcript(session_id,message_id))''',
-    '''CREATE TABLE IF NOT EXISTS agent_archive_receipts (
-        archive_id UUID PRIMARY KEY,session_id UUID NOT NULL REFERENCES agent_sessions(session_id),
-        snapshot_revision BIGINT NOT NULL,sha256 TEXT NOT NULL,manifest JSONB NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now())''',
-]
+from .state_integrity import validate_snapshot, validate_context
 
 # One SQL statement gives state/context/config/messages/ledger/diagnostics the
 # same MVCC snapshot. UUID and sequence indexes already support active lookup.
-HYDRATE = '''SELECT s.session_id::text AS session_id,s.state,s.config,s.revision,s.storage_version,
+HYDRATE = '''SELECT s.session_id::text AS session_id,s.state,s.config,s.config_ref,s.config_sha256,s.revision,s.storage_version,
     c.goal_message_id::text,c.ledger_record_id::text,c.raw_message_ids,c.revision AS context_revision,
     c.ledger_state,l.kind AS ledger_kind,l.payload AS ledger_payload,
+    (SELECT COALESCE(max(sequence),0)+1 FROM agent_session_transcript
+        WHERE session_id=s.session_id) AS archived_next_sequence,
     (SELECT jsonb_agg(m.payload || jsonb_build_object('message_id',m.message_id::text,
         'sequence',m.sequence,'created_at',m.created_at) ORDER BY ids.ord)
      FROM jsonb_array_elements_text(jsonb_build_array(c.goal_message_id::text)||c.raw_message_ids)
@@ -83,51 +69,7 @@ class SelectiveStorage:
                     await cursor.execute('''INSERT INTO agent_session_calls(session_id,call_id,message_id)
                         VALUES (%s,%s,%s) ON CONFLICT DO NOTHING''',(state.id,call['id'],entry.message_id))
 
-    async def _migrate_storage(self,cursor):
-        from .execution import OwnershipConflict
-        from .persistence import TranscriptIntegrityError
-        await cursor.execute("SELECT EXISTS(SELECT 1 FROM agent_schema_migrations WHERE component='agent-python' AND version=5)")
-        applied=(await cursor.fetchone())[0]
-        migrated=[]
-        # Only old-format rows are rewritten; rerunning startup does no backfill.
-        await cursor.execute('''SELECT session_id::text,state,revision,
-            lease_owner IS NOT NULL AND lease_expires_at>clock_timestamp()
-            FROM agent_sessions WHERE storage_version<5 ORDER BY session_id FOR UPDATE''')
-        for sid,data,revision,busy in await cursor.fetchall():
-            migrated.append(sid)
-            if busy:
-                raise OwnershipConflict('Stop legacy workers before migrating their live session')
-            state = SessionState.model_validate(data)
-            if state.id!=sid or state.revision!=revision:
-                raise TranscriptIntegrityError('Legacy snapshot identity/revision differs from its session row')
-            # v4 snapshots retain full event/attempt arrays, but only the last
-            # 32 decision diagnostics. Do not invent the missing older entries.
-            available = len(state.compaction_decisions)
-            if sum(state.compaction_skip_counts.values())+sum(state.compaction_trigger_counts.values())>available:
-                state.diagnostic_history_complete = False
-            stage_diagnostics(state)
-            await self._write_diagnostics(cursor,state)
-            state.revision = revision+1
-            await self._write_context(cursor,state)
-            await cursor.execute('''UPDATE agent_sessions SET state=%s::jsonb,revision=%s,storage_version=5,
-                last_commit_id=NULL,last_commit_sha256=NULL,updated_at=now() WHERE session_id=%s''',
-                (encoded(hot_snapshot(state)),state.revision,sid))
-            await cursor.execute('INSERT INTO agent_session_events(session_id,event,revision) VALUES (%s,%s::jsonb,%s)',
-                (sid,encoded({'type':'storage_migrated','storage_version':5}),state.revision))
-        # Restrict backfill to missing call mappings. Duplicate legacy call IDs
-        # remain represented, rather than silently deleting historical facts.
-        if not applied or migrated:
-            await cursor.execute('''INSERT INTO agent_session_calls(session_id,call_id,message_id)
-            SELECT t.session_id,c->>'id',t.message_id FROM agent_session_transcript t
-            CROSS JOIN LATERAL jsonb_array_elements(COALESCE(t.payload->'tool_calls','[]'::jsonb)) c
-            WHERE t.kind='message' AND c->>'id' IS NOT NULL AND (%s OR t.session_id=ANY(%s::uuid[]))
-            AND NOT EXISTS(SELECT 1 FROM agent_session_calls x WHERE x.session_id=t.session_id AND x.message_id=t.message_id AND x.call_id=c->>'id')
-            ON CONFLICT DO NOTHING''',(not applied,migrated))
-        await cursor.execute("INSERT INTO agent_schema_migrations(component,version) VALUES ('agent-python',5) ON CONFLICT DO NOTHING")
-
     async def get(self,session_id,*,include_history=False):
-        from .persistence import PersistedSession,TranscriptIntegrityError
-        from .config import AgentConfig,resolved_config_hash
         started = time.perf_counter()
         db_start = time.perf_counter()
         async with await psycopg.AsyncConnection.connect(self.database_url,row_factory=dict_row) as connection:
@@ -136,8 +78,19 @@ class SelectiveStorage:
         db_seconds = time.perf_counter()-db_start
         if row is None:
             return None
-        if row['storage_version']!=5:
-            raise TranscriptIntegrityError('Storage migration required before selective hydration')
+        persisted = self._decode_row(row)
+        state = persisted.state
+        self._measure('get',started,db_seconds,snapshot_json_bytes=len(encoded(row['state']).encode()),
+            selected_json_bytes=len(encoded(row).encode()),active_messages_loaded=len(state.memory),
+            diagnostic_rows_loaded=len(row['diagnostics']),include_history=include_history)
+        return persisted
+
+    @staticmethod
+    def _decode_row(row, *, verify_integrity=True):
+        from .persistence import PersistedSession, TranscriptIntegrityError
+        from .config import AgentConfig, resolved_config_hash
+        if row['storage_version']!=6:
+            raise TranscriptIntegrityError('Unsupported stored session format; automatic migration is disabled')
         data = dict(row['state'])
         data['memory'] = row['messages']
         data['compacted_context'] = (row['ledger_payload'] or {}).get('content')
@@ -146,23 +99,50 @@ class SelectiveStorage:
             data[family] = [d['payload'] for d in row['diagnostics'] if d['family']==family]
         data['diagnostics_complete'] = all(len(data[k])==data.get('diagnostic_counts',{}).get(k,0) for k in FAMILIES)
         try:
+            if verify_integrity:
+                validate_snapshot(row['state'])
             state = SessionState.model_validate(data)
             config = AgentConfig.model_validate(row['config'])
+            if verify_integrity:
+                validate_context(row['state'], state)
         except ValueError as error:
-            raise TranscriptIntegrityError('Invalid active context or stored configuration') from error
-        if (state.id!=row['session_id'] or state.revision!=row['revision'] or state.revision!=row['context_revision']
-                or not state.memory or state.memory[0].role!='user' or state.memory[0].content!=state.goal
-                or [m.message_id for m in state.memory]!=[row['goal_message_id'],*row['raw_message_ids']]
-                or len({m.message_id for m in state.memory})!=len(state.memory)
-                or [m.sequence for m in state.memory]!=sorted(m.sequence for m in state.memory)
-                or state.active_ledger_id!=row['ledger_record_id']
-                or (state.resolved_config_sha256 and state.resolved_config_sha256!=resolved_config_hash(config))
-                or (state.active_ledger_id and row['ledger_kind'] not in {'compaction_summary','legacy_summary'})
-                or (row['ledger_kind']=='compaction_summary' and encoded(state.ledger_state)!=encoded(row['ledger_payload'].get('ledger')))):
-            raise TranscriptIntegrityError('Snapshot/context/config/ledger references disagree')
-        self._measure('get',started,db_seconds,snapshot_json_bytes=len(encoded(row['state']).encode()),
-            selected_json_bytes=len(encoded(row).encode()),active_messages_loaded=len(state.memory),
-            diagnostic_rows_loaded=len(row['diagnostics']),include_history=include_history)
+            raise TranscriptIntegrityError('Invalid active context, integrity anchor, or stored configuration') from error
+        mismatches = []
+        if state.id != row['session_id']:
+            mismatches.append('session_id')
+        if state.revision != row['revision']:
+            mismatches.append('session_revision')
+        if state.revision != row['context_revision']:
+            mismatches.append('context_revision')
+        if state.config_ref != row['config_ref']:
+            mismatches.append('config_ref')
+        if state.config_sha256 != row['config_sha256']:
+            mismatches.append('config_sha256')
+        if (state.resolved_config_sha256
+                and state.resolved_config_sha256 != resolved_config_hash(config)):
+            mismatches.append('resolved_config_sha256')
+        if state.next_transcript_sequence != row['archived_next_sequence']:
+            mismatches.append('next_transcript_sequence')
+        if not state.memory or state.memory[0].role != 'user' or state.memory[0].content != state.goal:
+            mismatches.append('goal_message')
+        if [m.message_id for m in state.memory] != [row['goal_message_id'], *row['raw_message_ids']]:
+            mismatches.append('active_message_ids')
+        if len({m.message_id for m in state.memory}) != len(state.memory):
+            mismatches.append('duplicate_active_message_ids')
+        if [m.sequence for m in state.memory] != sorted(m.sequence for m in state.memory):
+            mismatches.append('active_message_order')
+        if state.active_ledger_id != row['ledger_record_id']:
+            mismatches.append('active_ledger_id')
+        if state.active_ledger_id and row['ledger_kind'] not in {'compaction_summary', 'legacy_summary'}:
+            mismatches.append('ledger_kind')
+        if (row['ledger_kind'] == 'compaction_summary'
+                and encoded(state.ledger_state) != encoded(row['ledger_payload'].get('ledger'))):
+            mismatches.append('ledger_state')
+        if mismatches:
+            raise TranscriptIntegrityError(
+                'Snapshot/context/config/ledger references disagree '
+                f"(session {row['session_id']}; fields: {', '.join(mismatches)})"
+            )
         return PersistedSession(state,config)
 
     async def diagnostic_page(self,session_id,family,after=0,limit=100,through=None):
@@ -206,9 +186,3 @@ class SelectiveStorage:
                 AND (%s::uuid IS NULL OR (started_at,run_id)>(SELECT started_at,run_id FROM agent_runs WHERE session_id=%s AND run_id=%s))
                 ORDER BY started_at,run_id LIMIT %s''',(session_id,after,session_id,after,limit))
             return await cursor.fetchall()
-
-
-CANDIDATE_INDEXES = [
-    'CREATE INDEX IF NOT EXISTS agent_runs_page_idx ON agent_runs(session_id,started_at,run_id)',
-    'CREATE INDEX IF NOT EXISTS agent_executions_page_idx ON agent_tool_executions(session_id,execution_id)',
-]

@@ -66,7 +66,15 @@ func (c OpenAIClient) RequestDiagnosticSnapshot() []ModelRequestDiagnostic {
 }
 
 func (c OpenAIClient) Decide(ctx context.Context, m []Message) (Decision, error) {
-	payload, err := c.decisionPayload(m)
+	return c.decide(ctx, m, DecisionPolicy{})
+}
+
+func (c OpenAIClient) DecideWithPolicy(ctx context.Context, m []Message, policy DecisionPolicy) (Decision, error) {
+	return c.decide(ctx, m, policy)
+}
+
+func (c OpenAIClient) decide(ctx context.Context, m []Message, policy DecisionPolicy) (Decision, error) {
+	payload, err := c.decisionPayloadWithPolicy(m, policy)
 	if err != nil {
 		return Decision{}, err
 	}
@@ -78,6 +86,14 @@ func (c OpenAIClient) Decide(ctx context.Context, m []Message) (Decision, error)
 }
 
 func (c OpenAIClient) decisionPayload(m []Message) (map[string]any, error) {
+	return c.decisionPayloadWithPolicy(m, DecisionPolicy{})
+}
+
+func (c OpenAIClient) decisionPayloadWithPolicy(m []Message, policy DecisionPolicy) (map[string]any, error) {
+	return c.buildDecisionPayload(m, policy)
+}
+
+func (c OpenAIClient) buildDecisionPayload(m []Message, policy DecisionPolicy) (map[string]any, error) {
 	tools := make([]any, 0, len(c.Config.Tools))
 	for _, t := range c.Config.Tools {
 		tools = append(tools, map[string]any{"type": "function", "function": map[string]any{"name": t.Name, "description": t.Description, "parameters": t.Parameters}})
@@ -99,66 +115,35 @@ func (c OpenAIClient) decisionPayload(m []Message) (map[string]any, error) {
 		maxTokens = *c.Config.LLM.MaxOutputTokens
 	}
 	payload["max_tokens"] = maxTokens
-	finalSynthesis := false
-	for _, message := range m {
-		if message.Role == "system" && message.Content != nil && strings.Contains(*message.Content, "[FINAL SYNTHESIS]") {
-			finalSynthesis = true
-			break
-		}
-	}
-	if c.Config.Execution.ToolPolicy == "none" || finalSynthesis {
+	if c.Config.Execution.ToolPolicy == "none" {
 		payload["tool_choice"] = "none"
 		if c.Config.Execution.ToolPolicy == "none" {
-			payload["messages"] = append([]Message{{Role: "system", Content: str("Tools are disabled for this task. Return the requested final answer directly.")}}, wire...)
+			wire = append([]Message{{Role: "system", Content: str("Tools are disabled for this task. Return the requested final answer directly.")}}, wire...)
 		}
 	} else {
 		payload["tools"] = tools
 		payload["tool_choice"] = "auto"
 		if c.Config.LLM.ToolCallMode == "single" {
 			payload["parallel_tool_calls"] = false
-			payload["messages"] = append([]Message{{Role: "system", Content: str("Call at most one configured function per response. Workflow phase labels are not function names.")}}, wire...)
+			wire = append([]Message{{Role: "system", Content: str("Call at most one configured function per response. Workflow phase labels are not function names.")}}, wire...)
 		}
+
 	}
-	payload["messages"] = wireMessages(payload["messages"].([]Message))
+	payload["messages"] = wireMessages(wire)
 	return payload, nil
 }
 
 func (c OpenAIClient) summaryPayload(goal string, historical []Message, previous *string, hybrid bool, correction ...string) map[string]any {
-	prompt := `Create a compacted context state for an agent. Preserve only verified facts.
-Use exactly these headings:
-- Core Objective
-- Universal Truths Discovered
-- Dead Ends
-- Current Local Pivot
-Do not invent facts. The original goal is protected separately. Do not include raw history.`
+	limit := c.Config.Memory.MaxSummaryTokens
+	if limit < 1 {
+		limit = 4096
+	}
+	prompt := fmt.Sprintf("Summarize only the supplied historical prefix and previous ledger. Copy the original goal exactly. Do not reconstruct recent raw messages. Carry forward prior useful lessons and dead ends. Keep provisional hypotheses separate from observations; do not present guesses as verified facts. Use only numbers appearing in the source. Do not calculate or invent statistics. Fill every section, using '- None.' if empty. No prose outside the structure. Escape XML special characters when using the XML format. Keep output short, within %d UTF-8 bytes. Return exactly four ordered headings: '- Core Objective:', '- Universal Truths Discovered:', '- Dead Ends:', '- Current Local Pivot:'. Put the original goal verbatim below the first heading, then source-grounded lessons, failed approaches, and a provisional next direction below the others. Do not emit placeholder text or tool calls.", limit)
 	if hybrid {
-		prompt = `You are the hybrid compaction and reflection engine for an autonomous agent.
-
-Analyze the historical prefix only. The primary agent separately preserves its recent raw
-working buffer, so do not reproduce, summarize, truncate, or invent raw messages here.
-Extract durable environmental constraints and lessons as imperative operational rules.
-Keep dead ends precise and short. Preserve only verified facts; mark uncertainty instead
-of promoting guesses to rules. Return exactly this structure and no surrounding prose:
-
-<COMPACTED_STATE>
-<USER_GOAL>
-Restate the original goal without changing its parameters or definitions.
-</USER_GOAL>
-<GLOBAL_LESSON_LEDGER>
-- Imperative rules for permanent constraints or discoveries; none if no verified lessons.
-</GLOBAL_LESSON_LEDGER>
-<DEAD_ENDS>
-- One-sentence failed approaches and why they failed; none if no verified dead ends.
-</DEAD_ENDS>
-<CURRENT_LOCAL_PIVOT>
-State the most important active hypothesis or next operational focus in one sentence.
-</CURRENT_LOCAL_PIVOT>
-</COMPACTED_STATE>
-
-The raw working buffer is retained by the primary agent outside this response.`
+		prompt = strings.ReplaceAll(fmt.Sprintf("Summarize only the supplied historical prefix and previous ledger. Copy the original goal exactly. Do not reconstruct recent raw messages. Carry forward prior useful lessons and dead ends. Keep provisional hypotheses separate from observations; do not present guesses as verified facts. Use only numbers appearing in the source. Do not calculate or invent statistics. Fill every section, using '- None.' if empty. No prose outside the structure. Escape XML special characters when using the XML format. Keep output short, within %d UTF-8 bytes. Return one XML document with root COMPACTED_STATE and exactly four text-only child elements, in this order: USER_GOAL, GLOBAL_LESSON_LEDGER, DEAD_ENDS, CURRENT_LOCAL_PIVOT. Use this complete first child verbatim: <USER_GOAL>__GOAL__</USER_GOAL>. Write concise source-grounded lessons in GLOBAL_LESSON_LEDGER, failed approaches in DEAD_ENDS, and a provisional next direction in CURRENT_LOCAL_PIVOT. Close every element and the root with its matching closing tag. Escape XML special characters in section text. Do not emit Markdown fences, tool calls, JSON messages, nested elements, or placeholder text.", limit), "__GOAL__", xmlEscape(strings.TrimSpace(goal)))
 	}
 	if len(correction) > 0 && correction[0] != "" {
-		prompt += "\n\nRetry correction: " + correction[0]
+		prompt += " Previous replacement rejected: " + correction[0] + ". Generate a complete corrected replacement from the source. Preserve the full original goal; replace every placeholder with source-grounded text or '- None.' and check all closing tags."
 	}
 	source, _ := sourceText(goal, historical, previous)
 	user := source
@@ -600,6 +585,7 @@ func (c OpenAIClient) postURL(ctx context.Context, client *http.Client, url stri
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode > 299 {
 		body, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+		logProviderFailureV2(res.StatusCode, body, res.Header.Get("x-request-id"))
 		template := strings.Contains(strings.ToLower(string(body)), "template")
 		failure := "model_http_error"
 		if template {

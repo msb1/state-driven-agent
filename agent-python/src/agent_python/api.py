@@ -8,17 +8,21 @@ from dataclasses import dataclass
 from typing import AsyncIterator
 from uuid import UUID
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 import httpx
 import anyio
+import psycopg
 
 from .config import ConfigRepository, resolved_config_hash
 from .engine import AgentEngine
-from .models import AppendUserMessageRequest, CreateSessionRequest, Message, ResumeSessionRequest, RunRequest, SessionResponse, SessionState
+from .models import CancelSessionRequest, AppendUserMessageRequest, CreateSessionRequest, Message, ResumeSessionRequest, RunRequest, SessionResponse, SessionState
 from .persistence import SessionRepository, RevisionConflict
 from .transcript import append_message
 from .tools import TOOLS
+from .commands import current_command, CommandError, envelope
+from .command_api import command_dependency, ReplayCommand, replay_response
+from .identity import CONTRACT, SCHEMA_VERSION
 from .execution import ExecutionCoordinator, OwnershipConflict, LeaseLost, RunCancelled, RecoveryBlocked, reconcile_abandoned
 
 config_repository = ConfigRepository()
@@ -38,11 +42,63 @@ locks: dict[str, asyncio.Lock] = {}
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    session_repository.commands.namespace
     await session_repository.startup()
     yield
 
 
-app = FastAPI(title="State-Driven AI Agent", version="0.5.0", lifespan=lifespan)
+app = FastAPI(title="State-Driven AI Agent", version=CONTRACT, lifespan=lifespan, dependencies=[Depends(command_dependency)])
+app.state.repository = lambda: session_repository
+
+
+@app.middleware('http')
+async def command_headers(request, call_next):
+    response = await call_next(request)
+    if hasattr(request.state,'command_id'):
+        response.headers['Idempotency-Command-Id'] = request.state.command_id
+    return response
+
+
+async def _prepare_command(path, body):
+    if path == '/sessions':
+        try:
+            snapshot = config_repository.resolve(body['config_ref'])
+            unknown = {tool.name for tool in snapshot.config.tools} - set(TOOLS)
+            if unknown:
+                raise ValueError('Unavailable compiled tools: ' + ', '.join(sorted(unknown)))
+        except (OSError,ValueError) as error:
+            raise HTTPException(422,'Invalid config_ref: ' + str(error)) from error
+        engine = AgentEngine(snapshot.config)
+        state = engine.create_session(body['user_prompt'],snapshot.ref,snapshot.sha256)
+        return {'state':state.model_dump(mode='json'),'config':snapshot.config.model_dump(mode='json')}
+    session_id = path.split('/')[2]
+    record = await _record(session_id)
+    return {'session_id':session_id,'config':record.engine.config.model_dump(mode='json')}
+
+
+app.state.prepare_command = _prepare_command
+
+
+@app.exception_handler(CommandError)
+async def command_error_handler(_,error):
+    return JSONResponse(status_code=error.status,content={'code':error.code,'message':error.message})
+
+
+@app.exception_handler(ReplayCommand)
+async def command_replay_handler(_,error):
+    return replay_response(error.row)
+
+
+@app.get('/commands/{command_id}')
+async def command_status(command_id: str):
+    try:
+        command_id = str(UUID(command_id))
+    except ValueError as error:
+        raise HTTPException(422,'command_id must be a UUID') from error
+    row = await session_repository.commands.get(command_id=command_id)
+    if row is None:
+        raise HTTPException(404,'Command not found')
+    return envelope(row)
 
 
 async def _record(session_id: str) -> SessionRecord:
@@ -83,7 +139,7 @@ async def revision_conflict_handler(_, error: RevisionConflict):
 
 @app.get("/health")
 async def health() -> dict[str, str | int]:
-    return {"status": "ok", "config_root": str(config_repository.root), "available_configs": len(config_repository.list())}
+    return {"status": "ok", "contract_version": CONTRACT, "storage_schema": SCHEMA_VERSION, "config_root": str(config_repository.root), "available_configs": len(config_repository.list())}
 
 
 @app.get("/configs")
@@ -97,19 +153,17 @@ async def list_configs() -> list[dict[str, object]]:
 
 @app.post("/sessions", response_model=SessionResponse, status_code=201)
 async def create_session(request: CreateSessionRequest) -> SessionResponse:
-    try:
-        snapshot = config_repository.resolve(request.config_ref)
-        unknown = sorted({tool.name for tool in snapshot.config.tools} - set(TOOLS))
-        if unknown:
-            raise ValueError(f"config references unavailable compiled-in tools: {', '.join(unknown)}")
-    except (OSError, ValueError) as error:
-        raise HTTPException(422, f"Invalid config_ref: {error}") from error
-    engine = AgentEngine(snapshot.config)
-    state = engine.create_session(request.user_prompt, snapshot.ref, snapshot.sha256)
-    record = SessionRecord(state, engine)
-    sessions[state.id], locks[state.id] = record, asyncio.Lock()
-    await _save(record, {"type": "session_created", "config_ref": snapshot.ref, "config_sha256": snapshot.sha256})
-    return SessionResponse(session=state, message=f"Session created with immutable config {snapshot.ref}@{snapshot.sha256[:12]}.")
+    from .config import AgentConfig
+    command = current_command.get()
+    admitted = command.row['request']['admission']
+    engine = AgentEngine(AgentConfig.model_validate(admitted['config']))
+    state = SessionState.model_validate(admitted['state'])
+    record = SessionRecord(state,engine)
+    sessions[state.id],locks[state.id] = record,asyncio.Lock()
+    command.terminal,command.response_status = True,201
+    command.response_message = f"Session created with immutable config {state.config_ref}@{state.config_sha256[:12]}."
+    await _save(record,{'type':'session_created','config_ref':state.config_ref,'config_sha256':state.config_sha256})
+    return SessionResponse(session=state,message=command.response_message)
 
 
 @app.get("/sessions/{session_id}", response_model=SessionState)
@@ -130,6 +184,8 @@ async def get_transcript(session_id: str, after_sequence: int = Query(default=0,
 @app.post("/sessions/{session_id}/messages", response_model=SessionResponse)
 async def append_user_message(session_id: str, request: AppendUserMessageRequest) -> SessionResponse:
     record = await _record(session_id)
+    command = current_command.get()
+    command.response_message = 'User input appended to session memory.'
     async with ExecutionCoordinator(session_repository, record.state, record.engine.config) as execution:
         persisted = await session_repository.get(session_id)
         record.state = persisted.state
@@ -144,6 +200,7 @@ async def append_user_message(session_id: str, request: AppendUserMessageRequest
         record.state.run_started_at = record.state.run_ended_at = None
         append_message(record.state, Message(role="user", content=request.content))
         record.state.no_progress_steps, record.state.progress_fingerprint = 0, None
+        command.terminal = True
         await execution.persist({"type": "user_message_appended"})
     return SessionResponse(session=record.state, message="User input appended to session memory.")
 
@@ -227,11 +284,19 @@ async def get_executions(session_id: str, after: str | None = None, limit: int =
 
 
 @app.post('/sessions/{session_id}/cancel')
-async def cancel_session(session_id: str):
+async def cancel_session(session_id: str, request: CancelSessionRequest):
     await _record(session_id)
-    ids = await session_repository.cancel_run(session_id)
-    return {'session_id': session_id, 'cancel_requested_for': ids,
-        'message': 'Cancellation is cooperative; in-flight effects are not undone.'}
+    command = current_command.get()
+    async with await psycopg.AsyncConnection.connect(session_repository.database_url) as db:
+        async with db.cursor() as cursor:
+            await session_repository.commands.guard(cursor,command)
+            await cursor.execute('SELECT session_id FROM agent_sessions WHERE session_id=%s FOR UPDATE',(session_id,))
+            await cursor.execute("UPDATE agent_runs SET cancel_requested=TRUE,cancel_requested_at=COALESCE(cancel_requested_at,clock_timestamp()) WHERE session_id=%s AND run_id=%s AND status='running' RETURNING run_id::text",(session_id,request.run_id))
+            ids = [row[0] for row in await cursor.fetchall()]
+            body = {'session_id':session_id,'cancel_requested_for':ids,'message':'Cancellation is cooperative; in-flight effects are not undone.'}
+            await cursor.execute('UPDATE agent_commands SET session_id=%s WHERE command_id=%s',(session_id,command.id))
+            await session_repository.commands.complete(cursor,command,200,body)
+    return body
 
 
 @app.get('/runs/abandoned')
@@ -240,7 +305,8 @@ async def abandoned_runs(limit: int = Query(default=100, ge=1, le=1000)):
 
 
 def _sse(event: dict[str, object]) -> str:
-    return f"data: {json.dumps(event, default=str)}\n\n"
+    identity = f"id: {event['event_id']}\n" if event.get('event_id') is not None else ''
+    return identity + f"data: {json.dumps(event, default=str)}\n\n"
 
 
 async def _execute_run(record, request, emit=None, resume=False, stop_requested=None):
@@ -252,6 +318,8 @@ async def _execute_run(record, request, emit=None, resume=False, stop_requested=
         record.state.execution_owner, record.state.execution_fence = execution.owner, execution.fence
         sessions[record.state.id] = record
         if not resume and record.state.status != 'active':
+            body = SessionResponse(session=record.state,message=record.state.final_answer or 'Run stopped.').model_dump(mode='json')
+            await session_repository.commands.finish_without_save(current_command.get(),200,body)
             return record
         if resume:
             record.state.status, record.state.final_answer = 'active', None
@@ -262,7 +330,7 @@ async def _execute_run(record, request, emit=None, resume=False, stop_requested=
                 raise OwnershipConflict('Recover pending tool calls with /resume without content before adding new instructions')
         await execution.start()
         if stop_requested and stop_requested.is_set():
-            await session_repository.cancel_run(record.state.id)
+            await session_repository.cancel_run(record.state.id,record.state.run_id)
         if resume and request.content:
             run_id = record.state.run_id
             record.state.run_id = None
@@ -304,8 +372,6 @@ async def _execute_run(record, request, emit=None, resume=False, stop_requested=
             record.state.last_error = {'code': 'controller_error', 'message': record.state.final_answer, 'recoverable': True}
             await persist({'type': 'error', **record.state.last_error})
         await execution.finish()
-        if emit:
-            await emit({'type': 'status', 'message': 'Agent run finished.', 'status': record.state.status})
         return record
 
 
@@ -313,7 +379,7 @@ async def _watch_disconnect(request, session_id, done, stop_requested):
     while not done.is_set():
         if await request.is_disconnected():
             stop_requested.set()
-            await session_repository.cancel_run(session_id)
+            await session_repository.cancel_run(session_id, sessions[session_id].state.run_id)
             return
         try:
             await asyncio.wait_for(done.wait(), timeout=0.25)
@@ -367,7 +433,7 @@ async def _run_stream(record, request, resume=False):
             # Let the current invocation finish and commit its known result.
             # The owner acknowledges cancellation before scheduling more work.
             with anyio.CancelScope(shield=True):
-                await session_repository.cancel_run(record.state.id)
+                await session_repository.cancel_run(record.state.id,record.state.run_id)
                 try:
                     await asyncio.shield(task)
                 except (RevisionConflict, OwnershipConflict, asyncio.CancelledError):
@@ -390,3 +456,49 @@ async def resume_session(session_id: str, request: ResumeSessionRequest) -> Stre
         raise HTTPException(409, 'Recover pending calls with /resume without content first')
     return StreamingResponse(_run_stream(record, request, resume=True), media_type='text/event-stream',
         headers={'Cache-Control': 'no-cache', 'Connection': 'keep-alive'})
+
+
+@app.get('/sessions/{session_id}/events/stream')
+async def reconnect_events(session_id: str, connection: Request, run_id: UUID,
+                           after_event_id: int = Query(default=0,ge=0)):
+    await _record(session_id)
+    async with await psycopg.AsyncConnection.connect(session_repository.database_url) as db:
+        cursor = await db.execute('SELECT status FROM agent_runs WHERE session_id=%s AND run_id=%s',(session_id,run_id))
+        if await cursor.fetchone() is None:
+            raise HTTPException(404,'Run not found')
+
+    async def read():
+        after = after_event_id
+        while not await connection.is_disconnected():
+            async with await psycopg.AsyncConnection.connect(session_repository.database_url) as db:
+                cursor = await db.execute("SELECT event_id,event FROM agent_session_events WHERE session_id=%s AND event_id>%s AND event->>'run_id'=%s ORDER BY event_id LIMIT 100",(session_id,after,str(run_id)))
+                rows = await cursor.fetchall()
+                cursor = await db.execute('SELECT status FROM agent_runs WHERE session_id=%s AND run_id=%s',(session_id,run_id))
+                status = await cursor.fetchone()
+            for identity,event in rows:
+                after = identity
+                yield _sse({**event,'event_id':identity})
+            if not rows and (not status or status[0]!='running'):
+                return
+            if not rows:
+                await asyncio.sleep(0.25)
+    return StreamingResponse(read(),media_type='text/event-stream',headers={'Cache-Control':'no-cache'})
+
+
+def contract_openapi():
+    from fastapi.openapi.utils import get_openapi
+    if app.openapi_schema is None:
+        schema = get_openapi(title=app.title,version=app.version,routes=app.routes)
+        for path in schema['paths'].values():
+            if 'post' in path:
+                operation = path['post']
+                operation.setdefault('parameters',[]).append({'in':'header','name':'Idempotency-Key','required':True,
+                    'description':'Retain the same key for retries of the same logical request.',
+                    'schema':{'type':'string','minLength':1,'maxLength':255,'pattern':'^[!-~]+$'}})
+                operation['responses'].update({'202':{'description':'Existing command is in progress or requires recovery'},
+                    '409':{'description':'Key reused with different content, or ownership conflict'}})
+        app.openapi_schema = schema
+    return app.openapi_schema
+
+
+app.openapi = contract_openapi

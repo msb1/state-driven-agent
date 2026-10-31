@@ -2,9 +2,46 @@
   "openapi": "3.1.0",
   "info": {
     "title": "State-Driven AI Agent",
-    "version": "0.2.0"
+    "version": "2.0.0"
   },
   "paths": {
+    "/commands/{command_id}": {
+      "get": {
+        "summary": "Command Status",
+        "operationId": "command_status_commands__command_id__get",
+        "parameters": [
+          {
+            "name": "command_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Command Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health": {
       "get": {
         "summary": "Health",
@@ -91,8 +128,28 @@
                 }
               }
             }
+          },
+          "202": {
+            "description": "Existing command is in progress or requires recovery"
+          },
+          "409": {
+            "description": "Key reused with different content, or ownership conflict"
           }
-        }
+        },
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "description": "Retain the same key for retries of the same logical request.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "pattern": "^[!-~]+$"
+            }
+          }
+        ]
       }
     },
     "/sessions/{session_id}": {
@@ -134,6 +191,87 @@
         }
       }
     },
+    "/sessions/{session_id}/transcript": {
+      "get": {
+        "summary": "Get Transcript",
+        "operationId": "get_transcript_sessions__session_id__transcript_get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "after_sequence",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "After Sequence"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "through_sequence",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Through Sequence"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Get Transcript Sessions  Session Id  Transcript Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/sessions/{session_id}/messages": {
       "post": {
         "summary": "Append User Message",
@@ -146,6 +284,18 @@
             "schema": {
               "type": "string",
               "title": "Session Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "description": "Retain the same key for retries of the same logical request.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "pattern": "^[!-~]+$"
             }
           }
         ],
@@ -179,6 +329,512 @@
                 }
               }
             }
+          },
+          "202": {
+            "description": "Existing command is in progress or requires recovery"
+          },
+          "409": {
+            "description": "Key reused with different content, or ownership conflict"
+          }
+        }
+      }
+    },
+    "/sessions/{session_id}/runs": {
+      "get": {
+        "summary": "Get Runs",
+        "operationId": "get_runs_sessions__session_id__runs_get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sessions/{session_id}/diagnostics/{family}": {
+      "get": {
+        "summary": "Get Diagnostics",
+        "operationId": "get_diagnostics_sessions__session_id__diagnostics__family__get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "family",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Family"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "After"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "through",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Through"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sessions/{session_id}/events": {
+      "get": {
+        "summary": "Get Events",
+        "operationId": "get_events_sessions__session_id__events_get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "After"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "through",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Through"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sessions/{session_id}/archives": {
+      "get": {
+        "summary": "Get Archives",
+        "operationId": "get_archives_sessions__session_id__archives_get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sessions/{session_id}/retention": {
+      "get": {
+        "summary": "Retention Plan",
+        "operationId": "retention_plan_sessions__session_id__retention_get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sessions/{session_id}/executions": {
+      "get": {
+        "summary": "Get Executions",
+        "operationId": "get_executions_sessions__session_id__executions_get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "After"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/sessions/{session_id}/cancel": {
+      "post": {
+        "summary": "Cancel Session",
+        "operationId": "cancel_session_sessions__session_id__cancel_post",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "description": "Retain the same key for retries of the same logical request.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "pattern": "^[!-~]+$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelSessionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Existing command is in progress or requires recovery"
+          },
+          "409": {
+            "description": "Key reused with different content, or ownership conflict"
+          }
+        }
+      }
+    },
+    "/runs/abandoned": {
+      "get": {
+        "summary": "Abandoned Runs",
+        "operationId": "abandoned_runs_runs_abandoned_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
+              "default": 100,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
           }
         }
       }
@@ -195,6 +851,18 @@
             "schema": {
               "type": "string",
               "title": "Session Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "description": "Retain the same key for retries of the same logical request.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "pattern": "^[!-~]+$"
             }
           }
         ],
@@ -228,6 +896,12 @@
                 }
               }
             }
+          },
+          "202": {
+            "description": "Existing command is in progress or requires recovery"
+          },
+          "409": {
+            "description": "Key reused with different content, or ownership conflict"
           }
         }
       }
@@ -244,6 +918,18 @@
             "schema": {
               "type": "string",
               "title": "Session Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "description": "Retain the same key for retries of the same logical request.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "pattern": "^[!-~]+$"
             }
           }
         ],
@@ -275,6 +961,12 @@
                 }
               }
             }
+          },
+          "202": {
+            "description": "Existing command is in progress or requires recovery"
+          },
+          "409": {
+            "description": "Key reused with different content, or ownership conflict"
           }
         }
       }
@@ -282,7 +974,6 @@
     "/sessions/{session_id}/resume": {
       "post": {
         "summary": "Resume Session",
-        "description": "Restore a terminal session, compact if needed, and stream its continuation.",
         "operationId": "resume_session_sessions__session_id__resume_post",
         "parameters": [
           {
@@ -292,6 +983,18 @@
             "schema": {
               "type": "string",
               "title": "Session Id"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "description": "Retain the same key for retries of the same logical request.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 255,
+              "pattern": "^[!-~]+$"
             }
           }
         ],
@@ -305,6 +1008,70 @@
             }
           }
         },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Existing command is in progress or requires recovery"
+          },
+          "409": {
+            "description": "Key reused with different content, or ownership conflict"
+          }
+        }
+      }
+    },
+    "/sessions/{session_id}/events/stream": {
+      "get": {
+        "summary": "Reconnect Events",
+        "operationId": "reconnect_events_sessions__session_id__events_stream_get",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Session Id"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "after_event_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0,
+              "title": "After Event Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -339,11 +1106,27 @@
             "description": "Additional user input appended to the active session memory."
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "content"
         ],
         "title": "AppendUserMessageRequest"
+      },
+      "CancelSessionRequest": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Run Id"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "run_id"
+        ],
+        "title": "CancelSessionRequest"
       },
       "CreateSessionRequest": {
         "properties": {
@@ -361,6 +1144,7 @@
             "default": "log-analysis.yaml"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "required": [
           "user_prompt"
@@ -382,6 +1166,27 @@
       },
       "Message": {
         "properties": {
+          "message_id": {
+            "type": "string",
+            "title": "Message Id"
+          },
+          "sequence": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sequence"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
           "role": {
             "type": "string",
             "enum": [
@@ -475,6 +1280,7 @@
             "title": "Content"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "ResumeSessionRequest",
         "description": "Continue a terminal session, optionally with a new user turn."
@@ -495,6 +1301,7 @@
             "title": "Max Steps"
           }
         },
+        "additionalProperties": false,
         "type": "object",
         "title": "RunRequest"
       },
@@ -547,6 +1354,190 @@
             ],
             "title": "Config Sha256"
           },
+          "resolved_config_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Resolved Config Sha256"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Revision",
+            "default": 0
+          },
+          "next_transcript_sequence": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Next Transcript Sequence",
+            "default": 1
+          },
+          "transcript_pending": {
+            "items": {
+              "$ref": "#/components/schemas/TranscriptEntry"
+            },
+            "type": "array",
+            "title": "Transcript Pending"
+          },
+          "active_ledger_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Ledger Id"
+          },
+          "history_complete": {
+            "type": "boolean",
+            "title": "History Complete",
+            "default": true
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "run_command_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Command Id"
+          },
+          "pending_commit_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Commit Id"
+          },
+          "run_status": {
+            "type": "string",
+            "enum": [
+              "idle",
+              "running",
+              "complete",
+              "failed",
+              "cancelled",
+              "interrupted",
+              "blocked"
+            ],
+            "title": "Run Status",
+            "default": "idle"
+          },
+          "run_started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Started At"
+          },
+          "run_ended_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Ended At"
+          },
+          "run_termination_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Termination Reason"
+          },
+          "pending_tool_calls": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Pending Tool Calls"
+          },
+          "consecutive_invalid_responses": {
+            "type": "integer",
+            "title": "Consecutive Invalid Responses",
+            "default": 0
+          },
+          "no_progress_steps": {
+            "type": "integer",
+            "title": "No Progress Steps",
+            "default": 0
+          },
+          "progress_fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Progress Fingerprint"
+          },
+          "progress_seen_outputs": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Progress Seen Outputs"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "completion_artifacts": {
+            "additionalProperties": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "object",
+            "title": "Completion Artifacts"
+          },
           "memory": {
             "items": {
               "$ref": "#/components/schemas/Message"
@@ -565,12 +1556,147 @@
             ],
             "title": "Compacted Context"
           },
+          "ledger_state": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ledger State"
+          },
+          "last_compaction_step": {
+            "type": "integer",
+            "title": "Last Compaction Step",
+            "default": 0
+          },
+          "last_compaction_attempt_step": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Compaction Attempt Step"
+          },
+          "last_compaction_estimated_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Compaction Estimated Tokens"
+          },
+          "last_compaction_attempt_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Compaction Attempt Sha256"
+          },
+          "compaction_decisions": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Compaction Decisions"
+          },
+          "compaction_skip_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Compaction Skip Counts"
+          },
+          "compaction_trigger_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Compaction Trigger Counts"
+          },
+          "compaction_attempts": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Compaction Attempts"
+          },
+          "request_budget": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Budget"
+          },
           "compaction_events": {
             "items": {
               "type": "string"
             },
             "type": "array",
             "title": "Compaction Events"
+          },
+          "diagnostic_counts": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Diagnostic Counts"
+          },
+          "diagnostics_complete": {
+            "type": "boolean",
+            "title": "Diagnostics Complete",
+            "default": true
+          },
+          "diagnostic_history_complete": {
+            "type": "boolean",
+            "title": "Diagnostic History Complete",
+            "default": true
+          },
+          "diagnostic_rejections": {
+            "type": "integer",
+            "title": "Diagnostic Rejections",
+            "default": 0
+          },
+          "compaction_savings_total": {
+            "type": "integer",
+            "title": "Compaction Savings Total",
+            "default": 0
+          },
+          "compaction_savings_known": {
+            "type": "boolean",
+            "title": "Compaction Savings Known",
+            "default": true
+          },
+          "last_archive_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Archive Id"
           },
           "workflow": {
             "anyOf": [
@@ -620,6 +1746,57 @@
           "goal"
         ],
         "title": "SessionState"
+      },
+      "TranscriptEntry": {
+        "properties": {
+          "message_id": {
+            "type": "string",
+            "title": "Message Id"
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 1.0,
+            "title": "Sequence"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Payload"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "decision_step": {
+            "type": "integer",
+            "minimum": 0.0,
+            "title": "Decision Step"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "sequence",
+          "kind",
+          "payload",
+          "decision_step"
+        ],
+        "title": "TranscriptEntry"
       },
       "ValidationError": {
         "properties": {

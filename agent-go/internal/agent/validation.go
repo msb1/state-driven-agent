@@ -133,10 +133,10 @@ func validateArguments(value any, schema map[string]any, path string) []string {
 		}
 	case string:
 		n := len([]rune(v))
-		if min, ok := schema["minLength"].(int); ok && n < min {
+		if min, ok := schemaNumber(schema["minLength"]); ok && float64(n) < min {
 			errs = append(errs, path+": string length is below configured minimum")
 		}
-		if max, ok := schema["maxLength"].(int); ok && n > max {
+		if max, ok := schemaNumber(schema["maxLength"]); ok && float64(n) > max {
 			errs = append(errs, path+": string length exceeds configured maximum")
 		}
 		if pattern, ok := schema["pattern"].(string); ok {
@@ -145,10 +145,10 @@ func validateArguments(value any, schema map[string]any, path string) []string {
 			}
 		}
 	case []any:
-		if min, ok := schema["minItems"].(int); ok && len(v) < min {
+		if min, ok := schemaNumber(schema["minItems"]); ok && float64(len(v)) < min {
 			errs = append(errs, path+": array is shorter than configured minimum")
 		}
-		if max, ok := schema["maxItems"].(int); ok && len(v) > max {
+		if max, ok := schemaNumber(schema["maxItems"]); ok && float64(len(v)) > max {
 			errs = append(errs, path+": array exceeds configured maximum")
 		}
 		if s, ok := schema["items"].(map[string]any); ok {

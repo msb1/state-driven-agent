@@ -7,7 +7,7 @@ edition = "2024"
 axum = { version = "0.8", features = ["json", "macros"] }
 tokio = { version = "1.43", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 serde_yaml = "0.9"
 sha2 = "0.10"
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -15,3 +15,4 @@ sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid"
 futures-util = "0.3"
 tower-http = { version = "0.6", features = ["trace"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+regex = "1"

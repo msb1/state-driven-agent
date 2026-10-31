@@ -14,6 +14,9 @@ import (
 // PostgresTools exposes the deterministic shared fixtures without any SQLite dependency.
 func PostgresTools(db *pgxpool.Pool) map[string]Tool {
 	return map[string]Tool{
+		"fixture_idempotent_write": func(ctx context.Context, args map[string]any) (string, error) {
+			return "", fmt.Errorf("durable keyed adapter required")
+		},
 		"inspect_log": func(ctx context.Context, a map[string]any) (string, error) {
 			start := integer(a, "start_line")
 			count := integer(a, "line_count")
@@ -484,14 +487,15 @@ func inspectSQLSchema(ctx context.Context, db *pgxpool.Pool) (string, error) {
 }
 
 // pythonStyleJSON reproduces json.dumps' default separator spacing for fixture text.
-func pythonStyleJSON(value any) string {
+func pythonStyleJSON(value any, ensureASCII ...bool) string {
 	compact := compactString(value)
+	escapeUnicode := len(ensureASCII) == 0 || ensureASCII[0]
 	var b strings.Builder
 	quoted := false
 	escaped := false
 	for _, r := range compact {
 		if quoted {
-			if r > 0x7f {
+			if r > 0x7f && escapeUnicode {
 				if r <= 0xffff {
 					fmt.Fprintf(&b, `\u%04x`, r)
 				} else {

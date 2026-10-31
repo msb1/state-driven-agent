@@ -1,5 +1,7 @@
 # What agent-python implements
 
+**Contract 2.0.0 / schema 6 is the new target.** The final section distinguishes this target from the implementation description retained below. No agent gains 2.0.0 runtime conformance merely by initializing the new tables. There is no backward compatibility requirement.
+
 This document describes the current working-tree implementation as reviewed on October 19, 2026. It covers the original Python agent, the subsequent durable reference implementation, and the latest observable-contract updates. It is based on runtime source, shared YAML profiles, current architecture/operations documentation, and the original implementation commit (`7a097fd`). No database, model, or qualification runs were performed to prepare this description.
 
 The current authority is [contract.md](contract.md), **observable contract 1.1.0**, using **storage schema 5**. The archived reference is named `python-1.0.0`; the FastAPI application advertises version `0.5.0`, and Python package metadata advertises `0.1.0`. These identify different things. The Python README's reference to contract 1.0.0 is older than the current contract and code. [design_update.md](design_update.md) describes the corresponding upgrade work for other language implementations; it does not establish their conformance.
@@ -596,3 +598,66 @@ Startup coordinates schema readiness and abandoned-run lifecycle recovery withou
 Cancellation and disconnects stop scheduling at cooperative boundaries while allowing a known in-flight result to settle under valid ownership. History endpoints expose ordered transcript, events, diagnostics, runs, executions, and archive receipts independently of the compact active context.
 
 Keep-all retention remains the default. Administrative export and eligible telemetry pruning pass through verified snapshot/dependency and fenced revision checks; compaction never invokes pruning. These boundaries are what allow a long investigation to resume with its evidence and audit trail intact.
+
+## 15. Contract 2.0.0 upgrade: durable operation identity
+
+This section overrides the earlier implementation narrative wherever it discusses request replay, schema, action recovery, streaming or retention. It describes the **required target**, not completed behavior in the four agent runtimes. Contract 2.0.0 / schema 6 has no compatibility path for schema 5; the development setup replaces the active DDL. The exact normative rules are in the final section of [contract.md](contract.md).
+
+### 15.1 Three related durable identities
+
+A caller-generated `Idempotency-Key` identifies an API intent. PostgreSQL registers one command UUID under the stable deployment namespace and trusted client scope. The normalized method, route and request have a separate JCS/SHA-256 fingerprint. The same key/content returns the original command/outcome; changed content conflicts. Persisted JSON responses are original response snapshots, while `GET /sessions/{id}` remains a current-state read.
+
+Repository commit UUIDs identify individual atomic saves belonging to a command. `agent_commit_receipts` retains every committed fingerprint and revision; the latest-commit fields are only a cache. Recovery can acknowledge an older committed operation without applying its old snapshot over subsequent work.
+
+A tool execution UUID is the immutable logical action identity within the session/workflow instance. Its external action key is SHA-256 of the RFC 8785 encoding of `["agent-action-v1", namespace, session_id, execution_id]`. A second fingerprint covers `["agent-payload-v1", action_type, target, frozen_arguments]`. Separating key and payload prevents a changed payload from silently acquiring a different key. The same logical action retains its identity across process, language, run and fence changes. A deliberately repeated identical action gets a new execution UUID.
+
+### 15.2 Recovery protocol
+
+First validate the client request, register/claim its command, freeze the configuration/input needed to execute it, and claim/reload the target session. For each action, persist identity, arguments, recipient target, derived key, fingerprint and adapter recovery capability before dispatch. Then persist its started attempt before the external call. Commit known results with the correlated tool message, workflow evidence, state, event and receipt before exposing success.
+
+After an uncertain acknowledgement, consult the ledger and recipient using the same identities. A matching database receipt or definitive execution result is reused. A recipient with real idempotency support receives the exact same payload/key within its guaranteed window. Otherwise a verifier uses an authoritative unique operation reference; ambiguous absence leaves the execution uncertain or blocked. Replanning does not replace an uncertain action. An ordinary timeout never proves a failed external effect.
+
+`agent_action_attempts` holds dispatch and verification evidence, including the recovery command and current owner/fence. The origin execution continues to reference its original command/run. Attempt numbers order both kinds; only dispatch attempts increment the execution's dispatch counter. Final success/failure is definitive; blocked uncertainty remains visible and recoverable rather than becoming fabricated success.
+
+When an internal effect and its receipt share PostgreSQL, one transaction writes both. Separate services need idempotent delivery/receipt handling; logging intent/action/completion is not real two-phase commit. The framework does not promise exactly-once effects from an arbitrary external adapter.
+
+### 15.3 Streaming and cancellation
+
+Every mutating POST requires a retained client key. A duplicate stream/run/resume request finds its existing command instead of advancing the run counter. Read-only event streaming reattaches using run/event identity without invoking the model. Socket closure keeps the cooperative cancellation policy; read-only reattachment does not resume a cancelled run. Explicit resume uses a new command key/new run, while pending logical actions preserve their old action identities. Cancellation names its target run so a retry cannot cancel a successor.
+
+### 15.4 Schema and fixtures
+
+`schema/postgres.sql` defines twelve shared tables. The original nine receive the schema-6 fields/relations; `agent_commands`, `agent_commit_receipts` and `agent_action_attempts` supply durable deduplication and attempt evidence. Command leases protect operations before session creation; session leases still protect session work. Command/commit/action/attempt evidence is protected from telemetry pruning. There are no per-language schema tables or production fault-injection hooks.
+
+The six fixture tables preserve the four existing business datasets and add pinned action-key vectors plus an idempotent recipient receipt/effect table. New vectors deliberately include identical retries, changed payloads with the same key, separate intentional actions with identical payloads, namespace isolation, Unicode and numeric canonicalization. The fixture recipient table is not an installed tool; its HTTP adapter and unknown-outcome scenarios remain runtime/qualification implementation work. Regenerating fixtures never erases recipient receipts, session history or command history.
+
+The explicit initializer validates pinned columns/types/defaults/constraints/indexes on repeat runs. Incompatible development databases need an explicit reset; the script never silently migrates. Run from the repository root with all agent processes stopped:
+
+```bash
+uv run --project agent-python python agent-python/scripts/initialize_database.py --reset
+uv run --project agent-python python agent-python/scripts/generate_fixtures.py
+```
+
+The reset drops only known agent-owned tables in the selected `.env` schema(s), without CASCADE into unrelated objects. It is destructive to those agent tables; use initialization without `--reset` for a fresh schema or read/validate repeat setup. No reset is executed by these documentation changes or by `persist.sh`. Separate fixture databases are handled explicitly. Previously qualified binaries cannot be used as schema-6 writers until their runtime changes are implemented.
+
+### 15.5 Qualification and rollout status
+
+Start the selected agent after initialization, then run repository-root `./persist.sh`. The same shared harness executes contract-2.0.0 checks `DU-06-V2-C01`–`DU-06-V2-C12` against every implementation through its common API and read-only PostgreSQL ledger. It includes caller-response suppression, actual stream interruption, operator-verified restart, two-worker ownership, definitive-failure replay and independently verified administrative export/pruning. Restart, second-worker readiness and administrative pruning require the documented operator steps; skipping required coverage prevents success. See [test-cases.md](test-cases.md#19-shared-postgresql-persistence-qualification) for execution and evidence and [design_update.md](design_update.md#du-06-contract-200-checks-and-measurements--current) for normative checks. Fresh schema creation and exact internal write-stage/COMMIT-ACK injection are outside the current DU-06 runtime matrix.
+
+Implement and qualify the Python reference, port the same observable behavior to Go/Rust, and later Java. Each runtime must explicitly update storage serialization, key admission, command execution/recovery, streaming/cancel behavior and schema validation. Existing key UUID fields must become schema-6 text fingerprints; no language-specific compatibility or weaker assertions are allowed. Update `test-cases.sh` and `aux-tests.sh` to supply stable keys as part of that runtime rollout. Their old unkeyed HTTP calls do not qualify contract 2.0.0.
+
+## 16. Python runtime implementation update — 2026-10-27
+
+This update supersedes section 15's pending-runtime status for Python. `commands.py` and `command_api.py` implement durable HTTP admission, scoped keys, command leases and response replay. `identity.py` owns the versioned JCS identities; setup/qualification import the same implementation. `schema_validation.py` verifies the exact schema read-only. `persistence.py` saves command outcomes and historical commit receipts in the aggregate transaction and resolves uncertain database acknowledgements using the same proposal/identity.
+
+`execution.py` and `execution_store.py` now preserve original action command/run identity while recording each current recovery command/owner/fence in dispatch and verification attempts. Recipient metadata is frozen with the policy; expiry, missing capabilities and ambiguous verification block safely. The controlled `fixture_idempotent_write` adapter performs an actual atomic fixture effect/receipt and supports primary-receipt verification.
+
+The API adds command lookup, retained request keys, exact original response replay, explicit cancel targets and read-only event reconnection. Command finalization releases command authority atomically with its outcome. Telemetry-only pruning preserves the new identities/receipts/attempts and exports archive format 2. Existing loop, compaction and completion rules continue to apply. Final user-run shell qualification remains pending; the full shared persistence suite still names unimplemented qualification cases explicitly.
+
+## Compaction normalization update — 2026-10-29
+
+For cross-language ports, the [compaction normalization requirements](agent-python/docs/compaction.md#2026-10-29-normalization-update--porting-requirements) supersede exact model-output formatting and model-goal-copy requirements described earlier. Accept one complete outer Markdown fence and nested text markup within the four required hybrid sections; normalize to canonical escaped plain-text XML. Restore the immutable goal from session state. Continue rejecting incomplete/truncated output, missing/duplicate sections, declarations/entities/comments, attributes, extra prose, empty reflection sections, unsupported numeric claims and over-budget proposals/canonical ledgers. Retain complete interaction boundaries, source provenance and staged budget/reduction checks. Reflection claims remain unverified and subordinate to workflow evidence.
+
+The provider token allowance is separate from the UTF-8 summary byte limit. Triggers do not promise acceptance or enforce a hard ceiling at the soft threshold. Accepted/rejected original proposals are available in transcript records, not merely the bounded diagnostics family. The linked requirements specify exact normalization, non-hybrid behavior and portability cases for Go/Rust/Java.
+
+Qualification evidence: Python passed `test-cases.sh` and auxiliary items 11–16 using `archive/curl-validation/shared.HYnwOR`; DU-06 C01–C12 passed via `archive/persistence/20261029T145016-e80e86cd/result.json`, including actual export/pruning. These are observed suite results, not a claim of whole-contract conformance or qualification of the other languages.

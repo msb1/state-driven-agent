@@ -1,5 +1,6 @@
 """Hot projection and append-only diagnostic outbox, independent of prompts."""
 import copy
+from .state_integrity import INTEGRITY_KEY, integrity_anchor
 
 FAMILIES = ('compaction_events','compaction_attempts','compaction_decisions')
 RECENT = 32
@@ -45,9 +46,11 @@ def stage_diagnostics(state):
 
 
 def hot_snapshot(state):
-    return state.model_dump(mode='json',exclude={
+    snapshot = state.model_dump(mode='json',exclude={
         'transcript_pending','pending_commit_id','memory','compacted_context','ledger_state',
         'diagnostics_complete',*FAMILIES})
+    snapshot[INTEGRITY_KEY] = integrity_anchor(snapshot, state)
+    return snapshot
 
 
 def legacy_snapshot(state):

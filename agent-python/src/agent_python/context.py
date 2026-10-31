@@ -98,6 +98,10 @@ def validate_ledger(text, goal, source, max_tokens, hybrid=True):
         raise ValueError('Summary is empty')
     if len(text.encode()) > max_tokens:
         raise ValueError('Summary exceeds ledger budget')
+    text = text.strip()
+    fenced = re.fullmatch(r'```(?:xml|text)?\s*\n(.*?)\n```', text, flags=re.DOTALL | re.IGNORECASE)
+    if fenced:
+        text = fenced.group(1).strip()
     if hybrid:
         if '<!' in text or '<?' in text:
             raise ValueError('XML declarations/entities/comments are forbidden')
@@ -106,11 +110,23 @@ def validate_ledger(text, goal, source, max_tokens, hybrid=True):
         except ET.ParseError as error:
             raise ValueError('Summary must be one complete COMPACTED_STATE document') from error
         names = ['USER_GOAL', 'GLOBAL_LESSON_LEDGER', 'DEAD_ENDS', 'CURRENT_LOCAL_PIVOT']
-        if root.tag != 'COMPACTED_STATE' or root.attrib or [child.tag for child in root] != names or (root.text or '').strip():
-            raise ValueError('Summary sections must occur exactly once in the required order')
-        if any(child.attrib or len(child) or (child.tail or '').strip() for child in root):
-            raise ValueError('Summary sections must contain only text')
-        sections = [(child.text or '').strip() for child in root]
+        children = list(root)
+        if (root.tag != 'COMPACTED_STATE' or root.attrib or (root.text or '').strip()
+                or len(children) != len(names) or {child.tag for child in children} != set(names)):
+            raise ValueError('Summary must contain each required section exactly once')
+        if any((child.tail or '').strip() for child in children) or any(node.attrib for node in root.iter()):
+            raise ValueError('Summary contains unsupported attributes or text outside sections')
+
+        def section_text(node):
+            # Preserve text and boundaries from nested lesson/list markup, then
+            # render it as plain escaped text in the canonical durable ledger.
+            parts = [node.text or '']
+            for child in node:
+                parts.extend(['\n', section_text(child), '\n', child.tail or ''])
+            return '\n'.join(line.strip() for line in ''.join(parts).splitlines() if line.strip())
+
+        by_name = {child.tag: section_text(child) for child in children}
+        sections = [by_name[name] for name in names]
     else:
         names = ['Core Objective', 'Universal Truths Discovered', 'Dead Ends', 'Current Local Pivot']
         pattern = r'(?m)^- (' + '|'.join(map(re.escape, names)) + r'):\s*'
@@ -118,8 +134,10 @@ def validate_ledger(text, goal, source, max_tokens, hybrid=True):
         if [match.group(1) for match in matches] != names or text[:matches[0].start()].strip():
             raise ValueError('Summary must contain the four required ordered headings')
         sections = [text[match.end():matches[i + 1].start() if i + 1 < len(matches) else len(text)].strip() for i, match in enumerate(matches)]
-    if any(not section for section in sections) or sections[0] != goal.strip():
-        raise ValueError('Summary must preserve the original goal exactly and populate each section')
+    # The model cannot replace the immutable session goal. Its copy is ignored.
+    sections[0] = goal.strip()
+    if any(not section or section in ('...', '…') for section in sections):
+        raise ValueError('Summary must populate every reflection section')
     if not numbers('\n'.join(sections)).issubset(numbers(source)):
         raise ValueError('Summary introduces numeric claims absent from its source')
     ledger = Ledger(goal=goal, model_claims=sections[1].splitlines(), dead_ends=sections[2].splitlines(),

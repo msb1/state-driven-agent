@@ -23,7 +23,7 @@ Keep the `.env` private. The Go and Rust services load it from the repository ro
 
 ### Fresh database setup (only for a new empty database)
 
-Skip this if `universal_state` already has the current agent tables and fixtures. From the repository root, these are the only commands needed to create the Python reference schema and generate the shared fixture tables:
+Skip this if `universal_state` already has the current shared tables and fixtures. From the repository root, these commands explicitly create the complete shared schema and populate the fixture tables:
 
 ```sh
 uv sync --project agent-python
@@ -31,7 +31,7 @@ uv run --project agent-python python agent-python/scripts/initialize_database.py
 uv run --project agent-python python agent-python/scripts/generate_fixtures.py
 ```
 
-Fixture generation replaces the four fixture tables' rows. Run it only when creating/resetting test fixtures, not before every test. This creates the reference PostgreSQL schema and shared fixtures that every port must use; each implementation must preserve the same durable state and API behavior. Java uses the connection-variable conversion below. Stop if a server startup error indicates that it cannot connect to PostgreSQL or find the required tables.
+The initializer uses `schema/postgres.sql` and `schema/fixtures.sql` to create all tables and columns before any server starts. Existing tables are validated without alterations; incompatible schemas require explicit operator action. Python, Go, and Rust servers only validate the schema and never create, alter, drop, or migrate tables, columns, or indexes. They fail startup with setup guidance when validation fails. Fixture generation replaces the four fixture tables' rows without changing their schema. Run it only when creating/resetting test fixtures, not before every test. Each implementation must preserve the same durable state and API behavior. Java uses the connection-variable conversion below.
 
 ## 2. Start exactly one server
 
@@ -499,64 +499,51 @@ jq -e '.runs | type == "array"' "$OUT/13-abandoned-runs.json"
 
 ## 15. Test actual SSE socket disconnect and resume
 
-This test closes curl's client socket after two seconds while leaving the server and model service running. Curl exit code `28` is expected for this deliberate timeout. The run must become `cancelled`, remain stable for three seconds, then finish on `/resume` with all eleven evidence records and a higher run fence.
+Run the standard-library Python integration suite against the local agent:
 
 ```sh
-curl -fsS -H 'Content-Type: application/json' \
-  -d '{"config_ref":"compaction-stress.yaml","user_prompt":"Audit employee corruption, calculate the normalized New York median valid salary, and generate and validate the clean city report. Complete all workflow phases. In the final answer, start with Phase 3, include the actual city table, and include the labeled New York median salary."}' \
-  "$AGENT_URL/sessions" -o "$OUT/14-created.json"
-C14=$(jq -er '.session.id' "$OUT/14-created.json")
-curl -N -sS --max-time 2 -H 'Content-Type: application/json' -d '{"max_steps":40}' \
-  "$AGENT_URL/sessions/$C14/run/stream" 2> "$OUT/14-disconnect.stderr" \
-  | tee "$OUT/14-disconnect.sse"
-DISCONNECT_CODE=$?
-printf '%s\n' "$DISCONNECT_CODE" > "$OUT/14-disconnect-curl-code.txt"
-[ "$DISCONNECT_CODE" = 28 ] && printf 'PASS deliberate client socket closure\n'
-
-POLL=0
-while [ "$POLL" -lt 120 ]; do
-  curl -fsS "$AGENT_URL/sessions/$C14" -o "$OUT/14-cancelled-state.json" || break
-  [ "$(jq -r '.run_status' "$OUT/14-cancelled-state.json")" = 'cancelled' ] && break
-  sleep 1
-  POLL=$((POLL + 1))
-done
-jq -e '.run_status == "cancelled" and .last_error.code == "run_cancelled"' "$OUT/14-cancelled-state.json"
-curl -fsS "$AGENT_URL/sessions/$C14/runs?limit=100" -o "$OUT/14-cancelled-runs.json"
-curl -fsS "$AGENT_URL/sessions/$C14/transcript?limit=1000&after_sequence=0" \
-  -o "$OUT/14-before-resume-transcript.json"
-cp "$OUT/14-cancelled-state.json" "$OUT/14-before-resume-state.json"
-sleep 3
-curl -fsS "$AGENT_URL/sessions/$C14" -o "$OUT/14-stable-state.json"
-diff -u "$OUT/14-before-resume-state.json" "$OUT/14-stable-state.json"
-curl -N -fsS -H 'Content-Type: application/json' -d '{"max_steps":40}' \
-  "$AGENT_URL/sessions/$C14/resume" | tee "$OUT/14-resume.sse"
-curl -fsS "$AGENT_URL/sessions/$C14" -o "$OUT/14-resumed-state.json"
-jq -e '.status == "complete" and .run_status == "complete" and
-  .workflow.active_phase == null and (.workflow.observed_evidence | length) == 11 and
-  (.final_answer | startswith("Phase 3\n"))' "$OUT/14-resumed-state.json"
-jq -e '
-  ([.final_answer | split("\n")[] | gsub("[ \\t\\r]"; "") | select(test("^\\|(Austin|Chicago|NewYork|Seattle)\\|"))] | sort) ==
-    (["|Austin|199|42.62|", "|Chicago|181|42.01|", "|NewYork|329|43.02|", "|Seattle|183|43.46|"] | sort) and
-  (.final_answer | test("New York median salary:[ \\t]*92500(\\.0+)?([ \\t\\r\\n]|$)"))
-' "$OUT/14-resumed-state.json"
-curl -fsS "$AGENT_URL/sessions/$C14/runs?limit=100" -o "$OUT/14-resumed-runs.json"
-jq -e --slurpfile cancelled "$OUT/14-cancelled-state.json" \
-  --slurpfile resumed "$OUT/14-resumed-state.json" '
-  [.runs[] | select(.run_id == $cancelled[0].run_id)] as $old |
-  [.runs[] | select(.run_id == $resumed[0].run_id)] as $new |
-  ($old | length) == 1 and ($new | length) == 1 and
-  $old[0].status == "cancelled" and $new[0].status == "complete" and
-  $new[0].fence > $old[0].fence
-' "$OUT/14-resumed-runs.json"
-curl -fsS "$AGENT_URL/sessions/$C14/transcript?limit=1000&after_sequence=0" \
-  -o "$OUT/14-after-resume-transcript.json"
-jq -e --slurpfile before "$OUT/14-before-resume-transcript.json" '
-  .history_complete == true and
-  (.entries[0:($before[0].entries | length)] == $before[0].entries)
-' "$OUT/14-after-resume-transcript.json"
+DISCONNECT_EVIDENCE=$(mktemp -d "$OUT/14-socket.XXXXXX")
+python3 "$PWD/scripts/disconnect_integration_test.py" \
+  --agent-url "$AGENT_URL" --evidence-dir "$DISCONNECT_EVIDENCE/suite"
 ```
 
-If the task finishes before curl closes, or the server does not report `cancelled`, keep the output and mark this trial failed/unexercised. Do not treat curl's timeout alone as proof of server cancellation.
+`aux-tests.sh` invokes this command automatically. To resume auxiliary testing at
+this item using the existing `current-run.txt`, run `bash aux-tests.sh --from 15`.
+It then continues to the two-worker checks in item 16. Use `--from 16` to resume
+only those checks after item 15 has passed.
+
+The server must see `config/socket-integration.yaml`. The suite starts a controlled
+model endpoint at `http://127.0.0.1:18089/v1`; keep that port free. For a different
+local port, set `AUX_SOCKET_MODEL_URL` identically for the agent and suite, then
+restart the agent. No live model, new tools, database initialization or fixture
+regeneration is needed for this item.
+
+The reusable functions are `test_connected_stream_completes`,
+`test_disconnect_requests_cancellation`, and
+`test_resume_preserves_committed_work` in `scripts/disconnect_integration_test.py`.
+They first prove the connected fixture completes. In a fresh session they actively
+read SSE, hold the model response behind an event gate, confirm the committed
+running identity, and explicitly shut down the TCP socket. Only after the same
+run records `cancel_requested` does the suite release the model response and
+require terminal cancellation. It never calls `/cancel`.
+
+Resume must complete with a new run ID and higher fence, unchanged goal/config,
+an immutable transcript prefix, one cancelled run and one completed run, and
+exactly one model request per phase. Before resume the stopped state and transcript
+are reread and compared. This scenario covers an in-flight model request; it does
+not claim tool side-effect recovery coverage.
+
+There is no timed socket close or delay used as a correctness condition. Gates
+and durable API observations determine ordering. `--watchdog-seconds` (default
+120) bounds each missing-signal wait; it is not a cancellation latency SLA. The
+model request timeout is 600 seconds so the default watchdog can report a missing
+notification before the held request times out.
+
+Each invocation retains fresh evidence: raw SSE, signal timestamps, model counts,
+active/cancelled/final snapshots, run history, transcripts, and `result.json`.
+Failures distinguish assertions from fixture/transport errors and return a nonzero
+exit status. Preserve evidence and fix the reported failure; do not regenerate the
+database to address a socket-test failure.
 
 ## 16. Test `/cancel`, competing ownership, and continuation across workers
 
@@ -654,3 +641,37 @@ Every route and assertion applies to every implementation. A missing endpoint is
 The servers also publish API documentation (`/docs` and `/openapi.json`; `/redoc` where provided). Documentation pages do not replace the behavioral assertions above. This suite defines the expected endpoint set for every upgraded port; qualification is complete only after the same full suite passes against Python, Go, Rust, and Java.
 
 Keep every `$OUT` folder, including failed requests, SSE logs and state snapshots. Do not save `.env`, print database credentials, or delete sessions during routine qualification. The historic benchmark scripts and reports remain preserved in [archive](archive/README.md).
+
+## 19. Shared PostgreSQL persistence qualification
+
+Run the repository-root launcher against an initialized schema-6 database and the selected contract-2.0.0 agent:
+
+```bash
+./persist.sh
+```
+
+The runner executes exactly the twelve current [DU-06 checks](design_update.md#du-06-contract-200-checks-and-measurements--current), `DU-06-V2-C01`–`DU-06-V2-C12`. It reads `AGENT_URL`, `AGENT_SESSION_DATABASE_URL`, `AGENT_FIXTURE_DATABASE_URL`, `SECOND_AGENT_URL` and `AUX_SOCKET_MODEL_URL` from `.env` or the environment. Defaults are primary port 8081, second worker port 8082 and the external controlled model fixture at `http://127.0.0.1:18089/v1`. No implementation flag is accepted and no agent package is imported. The Python harness has its own dependency environment under root `scripts/`.
+
+Keep the actual model service available for C11's positive log-tool workflow, which produces real execution/attempt/history rows. Keep port 18089 free for the external controlled model used by C07/C09; both worker processes must resolve `socket-integration.yaml` to that same URL. The fixture is external HTTP infrastructure; it does not add callbacks or branches inside an agent.
+
+The following operator steps are deliberate parts of the suite:
+
+- **C08:** Restart the primary server when prompted. The harness compares OS listener process identities (PID and start identity), reads the pinned layout again, checks unchanged settled ledger rows and replays original commands. Pressing Enter without restarting fails the check.
+- **C09:** Start a second instance when prompted, using the same configuration, deployment namespace and PostgreSQL database. Distinct listener processes and shared session visibility are verified. The suite holds a real model invocation while sending duplicate and competing requests through both workers. Local URLs and `lsof` (or Linux `/proc` visibility) are required for process identity evidence.
+- **C12:** Use the deployment's normal administrative tooling to export the specified test-owned terminal session to the displayed fresh JSONL path, then prune its telemetry while retaining **one event** and at least 32 diagnostics per family. The harness does not invoke language-specific administrative methods. It verifies the archive independently, compares all exported pre-pruning contents, checks actual event removal and protected ledger records, then replays the original commands. Retention declarations alone cannot pass C12. The common API currently has no administrative pruning mutation route, so this step is operator-controlled. Python deployment commands are documented in [operations.md](agent-python/docs/operations.md); other implementations use their own normal administrative tooling.
+
+C06 deliberately suppresses a real caller HTTP response after the upstream response completes, recovers the outcome from PostgreSQL and replays the same key. It does not claim to suppress a PostgreSQL COMMIT response. C07 deliberately shuts down a test stream socket during a held model invocation, checks cancellation/committed ledger consistency and replays its original key before intentional resume. Neither case manipulates database rows or internal repository proposals.
+
+Useful options:
+
+```bash
+./persist.sh --second-agent-url http://127.0.0.1:8082 --timeout 180
+./persist.sh --session-id EXISTING_SESSION_UUID
+./persist.sh --non-interactive --skip-restart --skip-pruning
+```
+
+Skipped or unavailable required steps remain `not_exercised`; the last command cannot produce full DU-06 qualification. C12 records a passed declaration subcheck separately if pruning is skipped. Extra session IDs receive read-only ledger inspection. Do not run unrelated workloads while qualifying the target workers or modifying their lifecycle.
+
+Evidence is retained under `archive/persistence/<UTC timestamp>-<run identifier>/`: per-case results and timings, request keys/fingerprints/responses, command states, repeatable-read PostgreSQL snapshots with hashes/counts, process identities, socket/control signals and the verified pruning export. The harness SQL is read-only; writes occur through the common agent API or the operator's approved administrative tooling. It creates no tables, triggers or corrupt rows, and never cleans up protected ledger evidence.
+
+Exit **0** requires all 12 cases to pass; **1** means a check/harness/evidence failure; **2** means required coverage is incomplete. A DU-06 pass establishes this matrix, not fresh schema creation, per-internal-stage rollback, a suppressed database COMMIT acknowledgement, or whole-contract conformance. The retired contract-1.1.0 runners are preserved in [agent-python/archive/du06-contract-1.1.0](agent-python/archive/du06-contract-1.1.0/README.md).

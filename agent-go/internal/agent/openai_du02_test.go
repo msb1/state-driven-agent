@@ -134,7 +134,7 @@ func TestDU02CompletedWorkflowRejectsFurtherToolExecution(t *testing.T) {
 	e := Engine{Config: cfg, Tools: map[string]Tool{"lookup": func(context.Context, map[string]any) (string, error) { calls++; return "ok", nil }}}
 	s := Session{Workflow: &WorkflowState{ActivePhase: nil}}
 	result, invoked := e.call(context.Background(), &s, Decision{Name: "lookup", Arguments: map[string]any{}}, nil)
-	if invoked || calls != 0 || !strings.Contains(result, "Workflow is complete") {
+	if invoked || calls != 0 || !strings.Contains(result, "All workflow phases are complete") {
 		t.Fatalf("result=%q invoked=%t calls=%d", result, invoked, calls)
 	}
 }

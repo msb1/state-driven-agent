@@ -4,11 +4,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 )
+
+// Preserve Python's JSON spelling inside prompts, including decimal markers.
+func promptJSON(value any) string {
+	canonical, err := canonicalValue(reflect.ValueOf(value))
+	if err != nil {
+		return "null"
+	}
+	return pythonStyleJSON(canonical)
+}
 
 func (e Engine) completionErrors(s *Session, answer string) []string {
 	errors := []string{}
@@ -62,65 +72,67 @@ func (e Engine) completionInstructions(s *Session) string {
 		parts = append(parts, *checks.Instructions)
 	}
 	if checks.Exact != nil {
-		parts = append(parts, "Return exactly the literal text between BEGIN_LITERAL and END_LITERAL, with no markers or explanation.\nBEGIN_LITERAL\n"+*checks.Exact+"\nEND_LITERAL")
+		parts = append(parts, "The final answer must be exactly the literal text between BEGIN_LITERAL and END_LITERAL below. Return only that text. Do not output the markers, quotes, a JSON wrapper, or an explanation.\nBEGIN_LITERAL\n"+*checks.Exact+"\nEND_LITERAL")
 	}
 	if checks.Pattern != nil {
-		parts = append(parts, "Final answer must match the configured presentation pattern exactly; do not print validation syntax.")
-	}
-	if len(checks.ForbiddenPatterns) > 0 {
-		parts = append(parts, "Do not include diagnostic or recovery internals in the final answer; the runtime applies configured forbidden-pattern checks.")
-	}
-	if checks.JSONSchema != nil {
-		b, _ := json.Marshal(checks.JSONSchema)
-		parts = append(parts, "Return only a bare JSON value satisfying this schema, without prose or code fences: "+string(b))
+		parts = append(parts, "Follow the final-answer presentation instructions exactly. Format is checked by the runtime; do not print validation syntax.")
 	}
 	for _, check := range checks.ResultChecks {
-		parts = append(parts, "Required final deliverable "+check.Label+" must be derived from the executed "+check.Tool+" result.")
+		if check.Kind == "markdown_table" {
+			parts = append(parts, "Write the Markdown table on actual separate lines, exactly as shown in the executed result. Do not wrap it in brackets, quotes, or a code fence. Do not print literal backslash-n sequences. Copy its headers, rows, and values without alteration.")
+			break
+		}
+	}
+	for _, check := range checks.ResultChecks {
+		parts = append(parts, "Required final deliverable: "+check.Label+", derived from the executed "+check.Tool+" result.")
+	}
+	if checks.JSONSchema != nil {
+		parts = append(parts, "Return only a bare JSON value satisfying this schema, without prose or code fences: "+promptJSON(checks.JSONSchema))
 	}
 	if len(parts) == 0 {
 		return ""
 	}
-	return "[FINAL ANSWER REQUIREMENTS]\n" + strings.Join(parts, "\n")
+	return "[FINAL ANSWER REQUIREMENTS]\n" + strings.Join(parts, "\n") + "\nProvide the final answer only after required workflow evidence is complete."
 }
 
 func (e Engine) workflowGuidance(s *Session) string {
-	if s.Workflow == nil || s.Workflow.ActivePhase == nil {
-		return "Obtain all required workflow evidence before answering."
+	if e.Config.Workflow == nil || s.Workflow == nil {
+		return ""
+	}
+	if s.Workflow.ActivePhase == nil {
+		return "[WORKFLOW STATE]\nAll configured phases have verified completion evidence. Do not call tools or functions; return the final answer now."
 	}
 	p := e.phase(*s.Workflow.ActivePhase)
 	if p == nil {
 		return "Obtain all required workflow evidence before answering."
 	}
-	allowed := append([]string{}, p.AllowedTools...)
-	if !p.AllowedToolsSet {
-		for _, item := range p.Completion {
-			allowed = appendUnique(allowed, item.Tool)
-		}
-	}
+	allowed := e.decisionPolicy(s).AllowedTools
 	sort.Strings(allowed)
 	allowedText := strings.Join(allowed, ", ")
-	if allowedText == "" {
-		allowedText = "none"
-	}
 	missing := []string{}
 	for i, item := range p.Completion {
 		if !item.Required || has(s.Workflow.ObservedEvidence, key(p.ID, "completion", i)) {
 			continue
 		}
-		line := item.Description + ". Call " + item.Tool + "; required argument constraints="
-		arguments, _ := json.Marshal(item.Arguments)
-		line += string(arguments) + "; expected result constraints="
-		result, _ := json.Marshal(item.Result)
-		line += string(result) + "; required output text="
-		content, _ := json.Marshal(item.ContentContains)
-		line += string(content)
-		line += ". Supply any additional schema-required arguments. Configured diagnostic errors count as evidence."
+		line := item.Description + " Call " + item.Tool + "; required argument constraints: "
+		line += promptJSON(item.Arguments) + "; expected result constraints: " + promptJSON(item.Result)
+		line += "; required output text: " + promptJSON(item.ContentContains)
+		line += ". Supply any additional schema-required arguments. Expected diagnostic errors count as evidence when configured."
 		missing = append(missing, line)
 	}
-	if len(missing) == 0 {
-		return "[WORKFLOW STATE]\nCurrent authoritative phase: " + p.Name + " (" + p.ID + ").\nAllowed tool names: " + allowedText + ".\nPhase instruction: " + p.Instruction + "\nAll required evidence is observed; follow the configured transition before returning a final answer."
+	return "[WORKFLOW STATE]\nThis is the current authoritative execution state. Historical summaries/pivots and prior results do not override it.\n" +
+		"Active phase: " + p.Name + " (" + p.ID + ").\nPhase instruction: " + p.Instruction +
+		"\nPhase IDs are workflow labels, not function names.\nAllowed function names: " + allowedText +
+		".\nDo not provide prose progress updates or a final answer while this phase is incomplete; make a tool call instead.\n" +
+		"Choose a call that supplies outstanding required evidence. Repeating already-observed outcomes does not satisfy a different argument constraint.\n" +
+		"Outstanding required evidence:\n" + bulletLines(missing)
+}
+
+func bulletLines(lines []string) string {
+	if len(lines) == 0 {
+		return ""
 	}
-	return "[WORKFLOW STATE]\nThis is the current authoritative execution state. Phase IDs are workflow labels, not function names.\nCurrent phase: " + p.Name + " (" + p.ID + ").\nAllowed tool names: " + allowedText + ".\nPhase instruction: " + p.Instruction + "\nDo not provide progress prose or a final answer while required evidence is incomplete.\nChoose a call that supplies outstanding evidence; repeating an already observed outcome does not satisfy a different argument constraint.\nOutstanding required evidence:\n- " + strings.Join(missing, "\n- ")
+	return "- " + strings.Join(lines, "\n- ")
 }
 
 func (e Engine) captureArtifacts(s *Session, call ToolCall, output string) {
@@ -385,10 +397,12 @@ func decimalEqual(a, b string) bool {
 func describeArtifact(check ResultCheck, value any) string {
 	switch check.Kind {
 	case "number":
+		if number, ok := value.(float64); ok {
+			return check.Label + " " + pythonFloat(number)
+		}
 		return check.Label + " " + numberString(value)
 	case "json_value":
-		b, _ := json.Marshal(value)
-		return "Expected JSON value at " + fmt.Sprint(check.AnswerPath) + ": " + string(b)
+		return "Expected JSON value at " + pythonRepr(check.AnswerPath) + ": " + promptJSON(value)
 	case "markdown_table":
 		rows, _ := tableValue(value)
 		if len(rows) == 0 {

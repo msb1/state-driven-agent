@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -308,14 +309,7 @@ func TestDU08C05TerminalCommitPrecedesFinalEvent(t *testing.T) {
 	p.State.ExecutionOwner, p.State.ExecutionFence = &owner, &fence
 	s.client = du08FinalClient{}
 	s.tools = map[string]agent.Tool{}
-	faulted := false
-	s.saveFault = func(stage string) error {
-		if stage == "terminal_commit" && !faulted {
-			faulted = true
-			return fmt.Errorf("injected terminal commit failure")
-		}
-		return nil
-	}
+	installDatabaseFailure(t, s, ctx, "agent_session_events", `WHEN (NEW.event->>'type' = 'final_result')`)
 	var events []map[string]any
 	err = s.execute(ctx, &p, 2, func(v any) error {
 		if event, ok := v.(map[string]any); ok {
@@ -326,8 +320,8 @@ func TestDU08C05TerminalCommitPrecedesFinalEvent(t *testing.T) {
 		}
 		return nil
 	})
-	if err == nil || !faulted {
-		t.Fatalf("expected terminal commit failure: err=%v faulted=%v", err, faulted)
+	if err == nil || !strings.Contains(err.Error(), "injected database failure") {
+		t.Fatalf("expected terminal commit failure: err=%v", err)
 	}
 	for _, event := range events {
 		if event["type"] == "final_result" {

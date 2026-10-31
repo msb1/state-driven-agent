@@ -1,0 +1,28 @@
+{
+  "contract_version": "2.0.0",
+  "fixture_seed": 20260918,
+  "tables": {
+    "agent_fixture_access_logs": {
+      "count": 650,
+      "sha256": "9260abb6049e2cbba4af5b3aa6f9ca6e510122f86dbc2c2891f0cfecd6fea890"
+    },
+    "agent_fixture_customers": {
+      "count": 2200,
+      "sha256": "485b35891332248ab27e14e7567ddc582bee330cf7777235493e08e3489eb9d6"
+    },
+    "agent_fixture_orders": {
+      "count": 6502,
+      "sha256": "2dfd79792721bb01c1c358f5a041681530e6b76d68d399f65e9ba42df45f020d"
+    },
+    "agent_fixture_employees": {
+      "count": 1000,
+      "sha256": "e4ba0ee900a7a2ad99d97f6951240505daf78967677f78c3d62298614bce72ba"
+    }
+  },
+  "business_oracles": {
+    "chicago_q1_revenue": "271017.77",
+    "top_500_ip": "10.0.0.5",
+    "top_500_count": 83,
+    "new_york_median": "92500.0"
+  }
+}

@@ -11,7 +11,7 @@ agent:
     base_url: ${OPENAI_BASE_URL:-http://127.0.0.1:8080/v1}
     api_key_env: OPENAI_API_KEY
     temperature: 0.1
-    timeout_seconds: 90
+    timeout_seconds: 180
   memory: {max_tokens: 6000, max_steps: 12, raw_turns_to_keep: 3, hybrid_reflection: true}
   # A one-phase workflow preserves the existing normalized-query/validator flow.
   workflow:

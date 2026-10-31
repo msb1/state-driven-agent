@@ -12,7 +12,7 @@ uv run --project agent-python uvicorn agent_python.api:app \
   --app-dir agent-python/src --host 127.0.0.1 --port 8081
 ```
 
-The application lifespan initializes/checks PostgreSQL schema and reconciles abandoned runs before serving requests. Root `.env` supplies database and model settings. Shared profiles live in `config/`; the resolved config is snapshotted at session creation so later environment or YAML changes do not rewrite an existing session. See [operations.md](operations.md) for database initialization, fixtures, recovery, pagination, and retention administration.
+The application lifespan validates PostgreSQL schema in a read-only transaction and reconciles abandoned runs before serving requests. Schema creation is an explicit setup operation; servers never create, alter, drop, or migrate schema objects. Root `.env` supplies database and model settings. Shared profiles live in `config/`; the resolved config is snapshotted at session creation so later environment or YAML changes do not rewrite an existing session. See [operations.md](operations.md) for database initialization, fixtures, recovery, pagination, and retention administration.
 
 ## Source map
 
@@ -26,7 +26,7 @@ The application lifespan initializes/checks PostgreSQL schema and reconciles aba
 | `completion.py`, `validation.py` | Strict JSON/schema validation, result extraction and independent final deliverable checks |
 | `transcript.py`, `storage_state.py` | Stable transcript identity/sequence, audit records, hot snapshot projection and staged diagnostic records |
 | `execution.py`, `execution_store.py` | Database lease ownership, heartbeat/fencing, run lifecycle, tool intent and policy-aware recovery |
-| `persistence.py`, `storage.py` | Schema coordination, atomic revision-checked commit, consistent selective hydration and paged history |
+| `persistence.py`, `storage.py` | Read-only schema validation, atomic revision-checked commit, consistent selective hydration and paged history |
 | `retention.py` | Verified JSONL archive, archive receipts, retention eligibility and guarded telemetry pruning |
 | `tools.py` | Registered asynchronous PostgreSQL fixture tools and per-tool recovery policy |
 | `scripts/` | Explicit database initialization, fixture generation, abandoned-run reconciliation and retention CLI |

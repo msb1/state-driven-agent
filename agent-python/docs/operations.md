@@ -1,6 +1,6 @@
 # Python operations and storage
 
-[Contract 1.1.0](../../contract.md), [architecture](architecture.md), and the [implementation guide](implementation.md) describe service semantics and code boundaries. All commands are user-run from the repository root. No database/model operations were performed during consolidation.
+[Contract 2.0.0 / schema 6](../../contract.md), [architecture](architecture.md), and the [implementation guide](implementation.md) describe service semantics and code boundaries. All commands are user-run from the repository root. No database/model operations were performed during consolidation.
 
 ## Fresh dedicated database
 
@@ -13,7 +13,7 @@ uv run --project agent-python python agent-python/scripts/initialize_database.py
 uv run --project agent-python python agent-python/scripts/generate_fixtures.py
 ```
 
-The first creates the current ten session/storage tables and columns using the runtime initializer. The second atomically replaces the four fixture tables' data. It is not a normal benchmark prerequisite when fixtures already exist. There is no required elite_rag migration, SQLite import or historical data preservation operation. The unused `migrate_sessions.py` wrapper is now archived. It only invoked the same initializer; use `initialize_database.py` for the supported explicit initialization operation. No active runtime/test imports that wrapper.
+The initializer creates nine shared session/history tables and four fixture tables from `schema/postgres.sql` and `schema/fixtures.sql`. It validates existing tables without changing them and refuses incompatible schemas. The fixture generator atomically replaces fixture rows without modifying tables or columns. Python, Go, and Rust servers perform read-only schema validation and never create, alter, drop, or migrate schema objects.
 
 Install dependencies and start the Python API (foreground worker):
 
@@ -24,6 +24,8 @@ uv run --project agent-python uvicorn agent_python.api:app \
 ```
 
 Keep the model service and PostgreSQL running separately. Root `.env` owns `MAIN_MODEL`; no CLI model flag is required. Existing sessions retain their resolved model/configuration snapshot. Stop the foreground API with Ctrl-C. Keep PostgreSQL and the model service available during API restart validation.
+
+Provider HTTP failures emit a bounded `model_provider_failure` JSON record to the server log. It can include allow-listed provider error type/code/parameter, a redacted message and provider request ID; the raw provider body, request payload and headers are never logged or returned by public session/API/SSE diagnostics. Restrict and retain server logs as operator data. See [OBS-01](../../contract.md#provider-error-visibility--obs-01).
 
 ## State, ownership and pagination
 
@@ -73,8 +75,26 @@ uv run --project agent-python python agent-python/scripts/storage_retention.py p
   --keep-diagnostics 32 --keep-events 100
 ```
 
-Pruning protects transcript, context, run/execution and provenance dependencies, and retains at least 32 diagnostic entries per family. It is not a full session deletion operation. Index experiments and migration/benchmark helpers are archived; they are not required to operate the service. The runtime owns required schema/index initialization.
+For the shared DU-06 C12 checkpoint, substitute the runner's displayed session ID and export path in these deployment administration commands, and use `--keep-events 1` for pruning so that actual event removal is exercised. The shared harness verifies the resulting database records/archive; it does not invoke Python internals or choose an implementation.
+
+Pruning protects transcript, context, run/execution and provenance dependencies, and retains at least 32 diagnostic entries per family. It is not a full session deletion operation. Index experiments and migration/benchmark helpers are archived; they are not required to operate the service. Only the explicit initializer creates the shared tables and indexes; runtime schema changes are prohibited.
 
 ## Fixtures and validation
 
 Expected fixture rows are 650 logs, 2200 customers, 6502 orders and 1000 employees. SQLite and old flat log files are archived and unused by all four current fixture implementations. Use the parent [test-cases.md](../../test-cases.md) for independent expected outputs and curl validation. The archived frozen fixture recipe/payload is available for historical comparison; curl business-output checks alone do not establish a complete row-by-row database fingerprint.
+
+## Contract 2.0.0 request/recovery operations
+
+Keep `AGENT_DEPLOYMENT_NAMESPACE` stable across every worker and language that shares this ledger. Development configuration now supplies `state-driven-agent-development`. A worker/process/run ID must not replace this namespace. New API intents receive new client keys; a retry keeps its original key and payload. `GET /commands/{command_id}` reports the original command; `GET /sessions/{id}` reports current state. Responses expose `Idempotency-Command-Id`; terminal duplicate responses also expose `Idempotency-Replayed:true`.
+
+All mutating POSTs require `Idempotency-Key`. Cancel bodies are `{"run_id":"<the originally targeted run UUID>"}`. Resume is a new intentional request/key/run; recovery retains old pending execution IDs and action keys. Read-only reconnection uses `GET /sessions/{id}/events/stream?run_id=...&after_event_id=...`; it neither invokes nor resumes work. The first stream POST retains the existing socket-disconnect cancellation rule.
+
+Command rows store `{input, admission}`: the normalized request is fingerprinted independently, while admission preserves the initial configuration and creation state/message IDs. Dynamic YAML/environment edits cannot alter an admitted creation when its key is replayed. Synchronous original responses and terminal run outcomes commit with their protected state. Blocked/uncertain actions remain blocked/uncertain commands rather than cached definitive failures.
+
+Archive format is `sda-archive-2`. Command/commit/action-attempt evidence is included in exports and protected from telemetry pruning. Cancellation is a metadata-only operation: its target flag and command outcome commit together without advancing the hot session revision underneath the running owner.
+
+The shell clients retain keys under their evidence directory. They have been adapted to the new API but are reserved for user-run final validation. A full `persist.sh` result cannot pass while its shared fault/process/lifecycle checks remain pending; use `--setup-only` and `--api-only` for their explicitly scoped checks.
+
+### C12 export-path checkpoint
+
+When `persist.sh` pauses at C12, use the **current prompt's** session UUID and absolute export path in a separate terminal at the repository root. Set `SESSION_ID` and `SESSION_EXPORT` to those displayed values; do not reuse a prior run's path. Run `plan`, then `export`, then `prune-telemetry` as shown above with `--keep-diagnostics 32 --keep-events 1`. Wait for each command to succeed. Keep the export at the exact displayed path and press Enter in the persistence terminal only after pruning succeeds. The harness checks that file against its pre-pruning snapshot. A successful prune alone does not pass C12 if the export is at another path. A fresh `persist.sh` run creates new sessions and does not require rerunning `test-cases.sh` or deleting old data.

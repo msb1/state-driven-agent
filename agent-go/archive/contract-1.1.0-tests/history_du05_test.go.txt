@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -54,6 +56,7 @@ func du05Repository(t *testing.T) (*server, context.Context) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	initializeTestSchema(t, pool, ctx)
 	s := &server{db: pool, fixtureDB: pool}
 	if err = s.schema(); err != nil {
 		t.Fatal(err)
@@ -61,10 +64,30 @@ func du05Repository(t *testing.T) (*server, context.Context) {
 	t.Logf("isolated schema: %s (removed after test)", schema)
 	return s, ctx
 }
+func initializeTestSchema(t *testing.T, pool *pgxpool.Pool, ctx context.Context) {
+	t.Helper()
+	definition, err := os.ReadFile(filepath.Join("..", "..", "..", "schema", "postgres.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, string(definition)); err != nil {
+		t.Fatal(err)
+	}
+}
 func du05Config() agent.Config {
 	return agent.Config{Name: "du05-controlled", Model: "scripted", SystemPrompt: "system", LLM: agent.LLM{ToolCallMode: "native"}, Memory: agent.Memory{ContextWindowTokens: 100000, MaxTokens: 6000, RawTurnsToKeep: 1, MaxSummaryTokens: 4096, HybridReflection: true, RunMaxSteps: du05Int(1)}, Execution: agent.Execution{ToolPolicy: "auto", MaxConsecutiveInvalidResponses: 3}, Tools: []agent.ToolDefinition{{Name: "lookup", Parameters: map[string]any{"type": "object"}}}}
 }
 func du05Int(v int) *int { return &v }
+func installDatabaseFailure(t *testing.T, s *server, ctx context.Context, table, when string) {
+	t.Helper()
+	if _, err := s.db.Exec(ctx, `CREATE FUNCTION du_test_fail() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'injected database failure'; END $$`); err != nil {
+		t.Fatal(err)
+	}
+	query := `CREATE TRIGGER du_test_fail AFTER INSERT OR UPDATE ON ` + pgx.Identifier{table}.Sanitize() + ` FOR EACH ROW ` + when + ` EXECUTE FUNCTION du_test_fail()`
+	if _, err := s.db.Exec(ctx, query); err != nil {
+		t.Fatal(err)
+	}
+}
 func du05Create(t *testing.T, s *server, ctx context.Context) persisted {
 	t.Helper()
 	cfg := du05Config()
@@ -355,7 +378,7 @@ func TestDU05C04PostgresTranscriptWatermarkAndPagination(t *testing.T) {
 	t.Log(fmt.Sprintf("fixed watermark=%v; later append excluded", first["through_sequence"]))
 }
 
-func TestDU05C02PostgresLegacyImportMarksHistoryGap(t *testing.T) {
+func TestDU05C02PostgresRejectsLegacyWithoutContext(t *testing.T) {
 	s, ctx := du05Repository(t)
 	id := uuid.NewString()
 	cfg, _ := json.Marshal(du05Config())
@@ -364,24 +387,11 @@ func TestDU05C02PostgresLegacyImportMarksHistoryGap(t *testing.T) {
 	if _, err := s.db.Exec(ctx, `INSERT INTO agent_sessions(session_id,state,config,config_ref,config_sha256) VALUES($1,$2,$3,$4,$5)`, id, state, cfg, "du05-controlled.yaml", "source-hash"); err != nil {
 		t.Fatal(err)
 	}
-	imported, err := s.fetch(ctx, id)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := s.fetch(ctx, id); err == nil {
+		t.Fatal("legacy session without context was accepted")
 	}
-	if imported.State.HistoryComplete || imported.State.ActiveLedgerID == nil {
-		t.Fatal("legacy import claimed complete history or lost ledger")
-	}
-	before := du05Rows(t, s, ctx, id)
-	again, err := s.fetch(ctx, id)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !equalJSON(before, du05Rows(t, s, ctx, id)) || again.State.Revision != imported.State.Revision {
-		t.Fatal("legacy import replay duplicated history")
-	}
-	var count int
-	if err = s.db.QueryRow(ctx, `SELECT count(*) FROM agent_session_transcript WHERE session_id=$1 AND kind='history_gap'`, id).Scan(&count); err != nil || count != 1 {
-		t.Fatal("legacy history gap not recorded once")
+	if rows := du05Rows(t, s, ctx, id); string(rows) != "[]" {
+		t.Fatalf("fetch modified unsupported legacy history: %s", rows)
 	}
 }
 func TestDU05C02PostgresDiagnosticTailKeepsFullArchive(t *testing.T) {

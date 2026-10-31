@@ -34,17 +34,15 @@ type persisted struct {
 	Config json.RawMessage
 }
 type server struct {
-	db             *pgxpool.Pool
-	fixtureDB      *pgxpool.Pool
-	root           string
-	client         agent.Client
-	tools          map[string]agent.Tool
-	ioMu           sync.Mutex
-	ioSamples      []map[string]any
-	saveFault      saveFaultHook
-	leaseSeconds   int
-	renewInterval  time.Duration
-	renewFaultHook func() error
+	db            *pgxpool.Pool
+	fixtureDB     *pgxpool.Pool
+	root          string
+	client        agent.Client
+	tools         map[string]agent.Tool
+	ioMu          sync.Mutex
+	ioSamples     []map[string]any
+	leaseSeconds  int
+	renewInterval time.Duration
 }
 
 func (s *server) recordIOSample(sample map[string]any) {
@@ -81,6 +79,10 @@ func main() {
 			log.Fatal(err)
 		}
 	}
+	if os.Getenv("AGENT_DEPLOYMENT_NAMESPACE") == "" {
+		log.Fatal("AGENT_DEPLOYMENT_NAMESPACE is required")
+	}
+	agent.RegisterFixtureRecipient(fixtureDB)
 	s := &server{db: db, fixtureDB: fixtureDB, root: root}
 	if err = s.schema(); err != nil {
 		log.Fatal(err)
@@ -98,21 +100,23 @@ func main() {
 	mux.HandleFunc("GET /openapi.json", openapi)
 	mux.HandleFunc("GET /docs", docs)
 	mux.HandleFunc("GET /health", s.health)
+	mux.HandleFunc("GET /commands/{command_id}", s.getCommand)
 	mux.HandleFunc("GET /configs", s.configs)
-	mux.HandleFunc("POST /sessions", s.create)
+	mux.HandleFunc("POST /sessions", s.commandHandler("/sessions", s.create))
 	mux.HandleFunc("GET /sessions/{session_id}", s.get)
 	mux.HandleFunc("GET /sessions/{session_id}/executions", s.executions)
 	mux.HandleFunc("GET /sessions/{session_id}/runs", s.runs)
 	mux.HandleFunc("GET /sessions/{session_id}/events", s.events)
+	mux.HandleFunc("GET /sessions/{session_id}/events/stream", s.eventStream)
 	mux.HandleFunc("GET /sessions/{session_id}/archives", s.archives)
 	mux.HandleFunc("GET /sessions/{session_id}/retention", s.retention)
 	mux.HandleFunc("GET /sessions/{session_id}/transcript", s.transcript)
 	mux.HandleFunc("GET /sessions/{session_id}/diagnostics/{kind}", s.compactionDiagnostics)
-	mux.HandleFunc("POST /sessions/{session_id}/messages", s.message)
-	mux.HandleFunc("POST /sessions/{session_id}/cancel", s.cancel)
-	mux.HandleFunc("POST /sessions/{session_id}/run", s.run)
-	mux.HandleFunc("POST /sessions/{session_id}/run/stream", s.stream)
-	mux.HandleFunc("POST /sessions/{session_id}/resume", s.resume)
+	mux.HandleFunc("POST /sessions/{session_id}/messages", s.commandHandler("/sessions/{session_id}/messages", s.message))
+	mux.HandleFunc("POST /sessions/{session_id}/cancel", s.commandHandler("/sessions/{session_id}/cancel", s.cancel))
+	mux.HandleFunc("POST /sessions/{session_id}/run", s.commandHandler("/sessions/{session_id}/run", s.run))
+	mux.HandleFunc("POST /sessions/{session_id}/run/stream", s.commandHandler("/sessions/{session_id}/run/stream", s.stream))
+	mux.HandleFunc("POST /sessions/{session_id}/resume", s.commandHandler("/sessions/{session_id}/resume", s.resume))
 	mux.HandleFunc("GET /runs/abandoned", s.abandoned)
 	log.Fatal(http.ListenAndServe(":"+env("PORT", "8000"), jsonErrors(mux)))
 }
@@ -144,50 +148,33 @@ func jsonErrors(h http.Handler) http.Handler {
 }
 func (s *server) schema() error {
 	ctx := context.Background()
-	conn, err := s.db.Acquire(ctx)
+	dir, err := os.Getwd()
 	if err != nil {
 		return err
 	}
-	defer conn.Release()
-	if _, err = conn.Exec(ctx, `SELECT pg_advisory_lock(734910003)`); err != nil {
-		return err
-	}
-	defer func() { _, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock(734910003)`) }()
-	// DU-07 replaces the incompatible Go-era tables with the canonical shared
-	// schema exactly once. Keep this marker outside the resettable tables so a
-	// normal restart never wipes persisted sessions.
-	if _, err = conn.Exec(ctx, `CREATE TABLE IF NOT EXISTS agent_go_schema_control (component TEXT PRIMARY KEY, version INTEGER NOT NULL)`); err != nil {
-		return err
-	}
-	var schemaVersion int
-	err = conn.QueryRow(ctx, `SELECT version FROM agent_go_schema_control WHERE component='agent-go'`).Scan(&schemaVersion)
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && schemaVersion < 1) {
-		tx, beginErr := conn.Begin(ctx)
-		if beginErr != nil {
-			return beginErr
+	var query []byte
+	for {
+		query, err = os.ReadFile(filepath.Join(dir, "schema", "validate.sql"))
+		if err == nil {
+			break
 		}
-		defer tx.Rollback(ctx)
-		if _, err = tx.Exec(ctx, `DROP TABLE IF EXISTS agent_session_context,agent_session_calls,agent_tool_executions,agent_runs,agent_session_diagnostics,agent_session_transcript,agent_session_events,agent_archive_receipts,agent_sessions,agent_schema_migrations CASCADE`); err != nil {
-			return err
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return fmt.Errorf("shared schema validation file not found: %w", err)
 		}
-		if _, err = tx.Exec(ctx, `INSERT INTO agent_go_schema_control(component,version) VALUES('agent-go',1) ON CONFLICT(component) DO UPDATE SET version=EXCLUDED.version`); err != nil {
-			return err
-		}
-		if err = tx.Commit(ctx); err != nil {
-			return err
-		}
-	} else if err != nil {
+		dir = parent
+	}
+	tx, err := s.db.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
 		return err
 	}
-	base := `CREATE TABLE IF NOT EXISTS agent_sessions (session_id UUID PRIMARY KEY,state JSONB NOT NULL,config JSONB NOT NULL,config_ref TEXT,config_sha256 TEXT,created_at TIMESTAMPTZ NOT NULL DEFAULT now(),updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),revision BIGINT NOT NULL DEFAULT 0,last_commit_id UUID,last_commit_sha256 TEXT,storage_version INTEGER NOT NULL DEFAULT 5,lease_owner UUID,lease_fence BIGINT NOT NULL DEFAULT 0,lease_expires_at TIMESTAMPTZ); CREATE TABLE IF NOT EXISTS agent_session_events (event_id BIGSERIAL PRIMARY KEY,session_id UUID NOT NULL REFERENCES agent_sessions(session_id) ON DELETE CASCADE,event JSONB NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT now(),revision BIGINT,commit_id UUID); CREATE INDEX IF NOT EXISTS agent_session_events_session_id_idx ON agent_session_events(session_id,event_id); CREATE UNIQUE INDEX IF NOT EXISTS agent_session_events_commit_idx ON agent_session_events(session_id,commit_id) WHERE commit_id IS NOT NULL`
-	if _, err = conn.Exec(ctx, base); err != nil {
-		return err
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, string(query)); err != nil {
+		return fmt.Errorf("shared PostgreSQL schema is missing or incompatible; run agent-python/scripts/initialize_database.py explicitly; servers do not change the schema: %w", err)
 	}
-	if _, err = conn.Exec(ctx, historyDDL); err != nil {
-		return err
-	}
-	return nil
+	return tx.Commit(ctx)
 }
+
 func reply(w http.ResponseWriter, status int, v any) {
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
@@ -197,7 +184,7 @@ func fail(w http.ResponseWriter, status int, msg string) {
 }
 func (s *server) health(w http.ResponseWriter, r *http.Request) {
 	files, _ := filepath.Glob(filepath.Join(s.root, "*.yaml"))
-	reply(w, 200, map[string]any{"status": "ok", "config_root": s.root, "available_configs": len(files)})
+	reply(w, 200, map[string]any{"status": "ok", "config_root": s.root, "available_configs": len(files), "contract_version": "2.0.0", "storage_schema": 6})
 }
 func (s *server) load(ref string) (json.RawMessage, string, error) {
 	snapshot, err := agent.LoadSnapshot(s.root, ref)
@@ -213,7 +200,7 @@ func (s *server) load(ref string) (json.RawMessage, string, error) {
 		// These fixture adapters are read-only. Unknown future adapters retain
 		// the safe reconcile default in Engine.call.
 		if tool.Recovery == nil && readOnlyFixtureTool(tool.Name) {
-			tool.Recovery = &agent.ToolRecovery{Mode: "read_only", MaxAttempts: 1}
+			tool.Recovery = &agent.ToolRecovery{Mode: "read_only", MaxAttempts: 2}
 		}
 	}
 	encoded, err := json.Marshal(snapshot.Config)
@@ -278,11 +265,19 @@ func (s *server) create(w http.ResponseWriter, r *http.Request) {
 		q.ConfigRef = "log-analysis.yaml"
 	}
 	cfg, hash, e := s.load(q.ConfigRef)
+	if command := currentCommand(r.Context()); command != nil {
+		cfg, _ = json.Marshal(command.Admission["config"])
+		hash, _ = command.Admission["config_sha256"].(string)
+		e = nil
+	}
 	if e != nil {
 		fail(w, 422, "Invalid config_ref: "+e.Error())
 		return
 	}
 	id := uuid.NewString()
+	if command := currentCommand(r.Context()); command != nil {
+		id = command.Admission["session_id"].(string)
+	}
 	goal := q.UserPrompt
 	st := agent.NewSession(id, goal, q.ConfigRef, hash)
 	var a map[string]any
@@ -317,17 +312,57 @@ func (s *server) cancel(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusUnprocessableEntity, ErrInvalidSessionID.Error())
 		return
 	}
-	runs, err := s.cancelRun(r.Context(), id.String())
-	if err != nil {
-		if errors.Is(err, ErrSessionNotFound) {
-			fail(w, http.StatusNotFound, "Session not found")
-		} else {
-			fail(w, http.StatusInternalServerError, err.Error())
-		}
+	var request struct {
+		RunID string `json:"run_id"`
+	}
+	if json.NewDecoder(r.Body).Decode(&request) != nil {
+		fail(w, 422, "run_id required")
 		return
 	}
-	reply(w, http.StatusOK, map[string]any{"session_id": id.String(), "cancel_requested_for": runs,
-		"message": "Cancellation is cooperative; in-flight effects are not undone."})
+	c := currentCommand(r.Context())
+	if c == nil {
+		fail(w, 500, "durable command required")
+		return
+	}
+	tx, err := s.db.Begin(r.Context())
+	if err != nil {
+		fail(w, 500, "Cancellation unavailable")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	if err = s.guardCommand(r.Context(), tx, c); err != nil {
+		fail(w, 409, "Command lease lost")
+		return
+	}
+	var exists bool
+	if err = tx.QueryRow(r.Context(), `SELECT true FROM agent_sessions WHERE session_id=$1 FOR UPDATE`, id.String()).Scan(&exists); err != nil {
+		fail(w, 404, "Session not found")
+		return
+	}
+	runs := []string{}
+	var run string
+	err = tx.QueryRow(r.Context(), `UPDATE agent_runs SET cancel_requested=true,cancel_requested_at=COALESCE(cancel_requested_at,clock_timestamp()) WHERE session_id=$1 AND run_id=$2 AND status='running' RETURNING run_id::text`, id.String(), request.RunID).Scan(&run)
+	if err != nil && err != pgx.ErrNoRows {
+		fail(w, 500, "Cancellation unavailable")
+		return
+	}
+	if err == nil {
+		runs = append(runs, run)
+	}
+	body := map[string]any{"session_id": id.String(), "cancel_requested_for": runs, "message": "Cancellation is cooperative; in-flight effects are not undone."}
+	if err = s.completeCommand(r.Context(), tx, c, 200, body, "succeeded"); err != nil {
+		fail(w, 409, "Cancellation command lease lost")
+		return
+	}
+	if err = tx.Commit(r.Context()); err != nil {
+		fail(w, 500, "Cancellation acknowledgement unavailable")
+		return
+	}
+	c.mu.Lock()
+	c.completed = true
+	c.mu.Unlock()
+	reply(w, 200, body)
+
 }
 func (s *server) executions(w http.ResponseWriter, r *http.Request) {
 	id, err := parseSessionID(r.PathValue("session_id"))
@@ -349,35 +384,25 @@ func (s *server) executions(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusUnprocessableEntity, err.Error())
 		return
 	}
-	rows, err := s.db.Query(r.Context(), `SELECT execution_id::text,run_id::text,call_id,tool,arguments,policy,idempotency_key::text,attempts,status,result,fence,created_at,updated_at,started_at,finished_at FROM agent_tool_executions WHERE session_id=$1 AND ($2::uuid IS NULL OR execution_id>$2::uuid) ORDER BY execution_id LIMIT $3`, id, after, limit)
+	rows, err := s.db.Query(r.Context(), `SELECT to_jsonb(e)-'payload'-'owner' FROM agent_tool_executions e WHERE session_id=$1 AND ($2::uuid IS NULL OR execution_id>$2::uuid) ORDER BY execution_id LIMIT $3`, id, after, limit)
 	if err != nil {
-		fail(w, http.StatusInternalServerError, err.Error())
+		fail(w, 500, "Execution history unavailable")
 		return
 	}
 	defer rows.Close()
 	entries := []map[string]any{}
 	for rows.Next() {
-		var executionID, runID, callID, tool, idempotencyKey, status string
-		var arguments, policy []byte
-		var result *string
-		var attempts int
-		var fence int64
-		var created, updated time.Time
-		var started, finished *time.Time
-		if err = rows.Scan(&executionID, &runID, &callID, &tool, &arguments, &policy, &idempotencyKey, &attempts, &status, &result, &fence, &created, &updated, &started, &finished); err != nil {
-			fail(w, http.StatusInternalServerError, err.Error())
+		var raw []byte
+		if err = rows.Scan(&raw); err != nil {
+			fail(w, 500, "Invalid execution record")
 			return
 		}
-		var args, policyValue any
-		if err = json.Unmarshal(arguments, &args); err != nil {
-			fail(w, http.StatusInternalServerError, err.Error())
+		var entry map[string]any
+		if err = json.Unmarshal(raw, &entry); err != nil {
+			fail(w, 500, "Invalid execution record")
 			return
 		}
-		if err = json.Unmarshal(policy, &policyValue); err != nil {
-			fail(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		entries = append(entries, map[string]any{"execution_id": executionID, "run_id": runID, "call_id": callID, "tool": tool, "arguments": args, "policy": policyValue, "idempotency_key": idempotencyKey, "attempts": attempts, "status": status, "result": result, "fence": fence, "created_at": created, "updated_at": updated, "started_at": started, "finished_at": finished})
+		entries = append(entries, entry)
 	}
 	if err = rows.Err(); err != nil {
 		fail(w, http.StatusInternalServerError, err.Error())
@@ -615,6 +640,11 @@ func (s *server) abandoned(w http.ResponseWriter, r *http.Request) {
 	reply(w, http.StatusOK, map[string]any{"runs": runs})
 }
 
+type diagnosticPageEntry struct {
+	Ordinal int64 `json:"ordinal"`
+	Payload any   `json:"payload"`
+}
+
 func (s *server) compactionDiagnostics(w http.ResponseWriter, r *http.Request) {
 	id, parseErr := parseSessionID(r.PathValue("session_id"))
 	if parseErr != nil {
@@ -656,7 +686,7 @@ func (s *server) compactionDiagnostics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
-	entries := []map[string]any{}
+	entries := []diagnosticPageEntry{}
 	next := after
 	for rows.Next() {
 		var ordinal int64
@@ -670,7 +700,7 @@ func (s *server) compactionDiagnostics(w http.ResponseWriter, r *http.Request) {
 			fail(w, 500, err.Error())
 			return
 		}
-		entries = append(entries, map[string]any{"ordinal": ordinal, "data": payload})
+		entries = append(entries, diagnosticPageEntry{Ordinal: ordinal, Payload: payload})
 		next = ordinal
 	}
 	if err = rows.Err(); err != nil {
@@ -733,6 +763,10 @@ func (s *server) execute(ctx context.Context, p *persisted, max int, emit func(a
 		tools = agent.PostgresTools(s.fixtureDB)
 	}
 	engine := agent.Engine{Config: config, Client: client, Tools: tools}
+	if c := currentCommand(ctx); c != nil {
+		p.State.CommandID = c.ID
+		p.State.DeploymentNamespace = c.Namespace
+	}
 	ctx = agent.WithExecutionCheckpoint(ctx, func() error { return s.checkRun(ctx, &p.State) })
 	if p.State.RunID != nil && p.State.RunStatus == "running" {
 		oldRun := *p.State.RunID
@@ -766,9 +800,9 @@ func (s *server) execute(ctx context.Context, p *persisted, max int, emit func(a
 }
 func (s *server) run(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("session_id")
-	p, runCtx, cleanup, e := s.ownSession(context.Background(), id)
+	p, runCtx, cleanup, e := s.ownSessionWithPolicy(context.WithoutCancel(r.Context()), id, true)
 	if e != nil {
-		if errors.Is(e, ErrOwnershipConflict) {
+		if errors.Is(e, ErrOwnershipConflict) || errors.Is(e, ErrTerminalSession) {
 			fail(w, http.StatusConflict, e.Error())
 		} else if errors.Is(e, ErrInvalidSessionID) {
 			fail(w, http.StatusUnprocessableEntity, e.Error())
@@ -792,7 +826,7 @@ func (s *server) run(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	if p.State.Status != "active" {
-		reply(w, 200, map[string]any{"session": p.State, "message": "Session is terminal; use POST /sessions/{id}/resume to continue it."})
+		fail(w, 409, "Session is terminal; use POST /sessions/{id}/resume to continue it.")
 		return
 	}
 	var q struct {
@@ -800,7 +834,7 @@ func (s *server) run(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewDecoder(r.Body).Decode(&q)
 	if e = s.execute(runCtx, &p, q.MaxSteps, func(e any) error { return s.save(runCtx, &p, e) }); e != nil {
-		if errors.Is(e, ErrFencingConflict) || errors.Is(e, ErrRevisionConflict) || errors.Is(e, ErrOwnershipConflict) || errors.Is(e, ErrLeaseLost) {
+		if errors.Is(e, ErrFencingConflict) || errors.Is(e, ErrRevisionConflict) || errors.Is(e, ErrOwnershipConflict) || errors.Is(e, ErrTerminalSession) || errors.Is(e, ErrLeaseLost) {
 			fail(w, http.StatusConflict, e.Error())
 		} else {
 			fail(w, http.StatusInternalServerError, e.Error())
@@ -813,9 +847,9 @@ func (s *server) stream(w http.ResponseWriter, r *http.Request) { s.streamCommon
 func (s *server) resume(w http.ResponseWriter, r *http.Request) { s.streamCommon(w, r, true) }
 func (s *server) streamCommon(w http.ResponseWriter, r *http.Request, resume bool) {
 	id := r.PathValue("session_id")
-	p, runCtx, cleanup, e := s.ownSession(context.Background(), id)
+	p, runCtx, cleanup, e := s.ownSessionWithPolicy(context.WithoutCancel(r.Context()), id, !resume)
 	if e != nil {
-		if errors.Is(e, ErrOwnershipConflict) {
+		if errors.Is(e, ErrOwnershipConflict) || errors.Is(e, ErrTerminalSession) {
 			fail(w, http.StatusConflict, e.Error())
 		} else if errors.Is(e, ErrInvalidSessionID) {
 			fail(w, http.StatusUnprocessableEntity, e.Error())
@@ -885,9 +919,7 @@ func (s *server) streamCommon(w http.ResponseWriter, r *http.Request, resume boo
 			events <- sseError(err)
 			return
 		}
-		if err := emit(map[string]any{"type": "status", "message": "Agent run finished.", "status": p.State.Status}); err != nil {
-			events <- sseError(err)
-		}
+
 	}()
 	disconnected := false
 	disconnect := r.Context().Done()
@@ -902,7 +934,7 @@ func (s *server) streamCommon(w http.ResponseWriter, r *http.Request, resume boo
 				continue
 			}
 			b, _ := json.Marshal(event)
-			if _, err := fmt.Fprintf(w, "data: %s\n\n", b); err != nil {
+			if _, err := fmt.Fprintf(w, "id: %v\ndata: %s\n\n", event["event_id"], b); err != nil {
 				disconnected, disconnect = true, nil
 				cancelCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				_, _ = s.cancelRun(cancelCtx, p.State.ID)

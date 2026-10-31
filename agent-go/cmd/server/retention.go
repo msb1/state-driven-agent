@@ -23,6 +23,7 @@ import (
 type archiveTable struct{ name, order string }
 
 var archiveTables = []archiveTable{
+	{"agent_commands", "created_at,command_id"}, {"agent_commit_receipts", "committed_revision"}, {"agent_action_attempts", "execution_id,attempt_number"},
 	{"agent_sessions", "session_id"}, {"agent_session_context", "session_id"}, {"agent_session_transcript", "sequence"},
 	{"agent_session_events", "event_id"}, {"agent_session_diagnostics", "family,ordinal"}, {"agent_runs", "started_at,run_id"},
 	{"agent_tool_executions", "execution_id"}, {"agent_session_calls", "call_id,message_id"}, {"agent_archive_receipts", "archive_id"},
@@ -85,7 +86,7 @@ func (s *server) exportArchive(ctx context.Context, sessionID, path string) (ver
 	if err = tx.QueryRow(ctx, `SELECT revision FROM agent_sessions WHERE session_id=$1`, id).Scan(&out.SnapshotRevision); err != nil {
 		return out, err
 	}
-	out.Format = "sda-archive-1"
+	out.Format = "sda-archive-2"
 	out.ArchiveID = uuid.NewString()
 	out.SessionID = id.String()
 	out.Counts = map[string]int64{}
@@ -175,11 +176,11 @@ func (s *server) retentionPlan(ctx context.Context, id string) (map[string]any, 
 		return nil, err
 	}
 	var unresolved, running int64
-	if err = s.db.QueryRow(ctx, `SELECT (SELECT count(*) FROM agent_tool_executions WHERE session_id=$1 AND status IN ('pending','started','uncertain')),(SELECT count(*) FROM agent_runs WHERE session_id=$1 AND status='running')`, id).Scan(&unresolved, &running); err != nil {
+	if err = s.db.QueryRow(ctx, `SELECT (SELECT count(*) FROM agent_tool_executions WHERE session_id=$1 AND status IN ('pending','started','uncertain','blocked')),(SELECT count(*) FROM agent_runs WHERE session_id=$1 AND status='running')`, id).Scan(&unresolved, &running); err != nil {
 		return nil, err
 	}
 	eligible := p.State.Status != "active" && p.State.RunStatus != "running" && len(p.State.PendingToolCalls) == 0 && unresolved == 0 && running == 0
-	return map[string]any{"session_id": id, "revision": p.State.Revision, "default_policy": "keep_all", "eligible": eligible, "unresolved_executions": unresolved, "running_lifecycles": running, "keep_diagnostics": 32, "keep_events": 100, "protected_tables": []string{"agent_sessions", "agent_session_context", "agent_session_transcript", "agent_session_calls", "agent_runs", "agent_tool_executions", "agent_archive_receipts"}, "prunable_tables": []string{"agent_session_events", "agent_session_diagnostics"}, "requires": "Verified fresh export, terminal session, ownership/fencing, matching revision and database digests"}, nil
+	return map[string]any{"session_id": id, "revision": p.State.Revision, "default_policy": "keep_all", "eligible": eligible, "unresolved_executions": unresolved, "running_lifecycles": running, "keep_diagnostics": 32, "keep_events": 100, "protected_tables": []string{"agent_commands", "agent_commit_receipts", "agent_action_attempts", "agent_sessions", "agent_session_context", "agent_session_transcript", "agent_session_calls", "agent_runs", "agent_tool_executions", "agent_archive_receipts"}, "prunable_tables": []string{"agent_session_events", "agent_session_diagnostics"}, "requires": "Verified fresh export, terminal session, ownership/fencing, matching revision and database digests"}, nil
 }
 
 // retention CLI is an explicit database admin driver, kept outside HTTP.
@@ -270,7 +271,7 @@ func verifyArchive(path string) (verifiedArchive, error) {
 	if len(header) != 4 {
 		return out, fmt.Errorf("invalid archive header shape")
 	}
-	if err = json.Unmarshal(header["format"], &out.Format); err != nil || out.Format != "sda-archive-1" {
+	if err = json.Unmarshal(header["format"], &out.Format); err != nil || out.Format != "sda-archive-2" {
 		return out, fmt.Errorf("unsupported archive format")
 	}
 	if err = json.Unmarshal(header["archive_id"], &out.ArchiveID); err != nil {
@@ -457,7 +458,7 @@ func (s *server) pruneTelemetry(ctx context.Context, id, path string, keepDiagno
 		return nil, fmt.Errorf("active or pending session cannot be pruned")
 	}
 	var unresolved, running int64
-	if err = s.db.QueryRow(ctx, `SELECT (SELECT count(*) FROM agent_tool_executions WHERE session_id=$1 AND status IN ('pending','started','uncertain')),(SELECT count(*) FROM agent_runs WHERE session_id=$1 AND status='running')`, id).Scan(&unresolved, &running); err != nil {
+	if err = s.db.QueryRow(ctx, `SELECT (SELECT count(*) FROM agent_tool_executions WHERE session_id=$1 AND status IN ('pending','started','uncertain','blocked')),(SELECT count(*) FROM agent_runs WHERE session_id=$1 AND status='running')`, id).Scan(&unresolved, &running); err != nil {
 		return nil, err
 	}
 	if unresolved != 0 || running != 0 {
@@ -521,6 +522,12 @@ func (s *server) pruneTelemetry(ctx context.Context, id, path string, keepDiagno
 	p.State.DiagnosticHistoryComplete = false
 	ret := map[string]any{"format": archive.Format, "archive_id": archive.ArchiveID, "session_id": archive.SessionID, "snapshot_revision": archive.SnapshotRevision, "sha256": archive.SHA256, "counts": archive.Counts, "table_sha256": archive.TableSHA256, "watermarks": archive.Watermarks, "archive_path": archive.ArchivePath, "keep_diagnostics": keepDiagnostics, "keep_events": keepEvents, "prune": true}
 	p.State.RetentionPending = ret
+	var commandCleanup func()
+	ctx, commandCleanup, err = s.administrativeCommand(ctx, id, "/admin/retention", map[string]any{"session_id": id, "archive_id": archive.ArchiveID})
+	if err != nil {
+		return nil, err
+	}
+	defer commandCleanup()
 	if err = s.save(ctx, &p, map[string]any{"type": "telemetry_archived", "archive_id": archive.ArchiveID}); err != nil {
 		return nil, err
 	}

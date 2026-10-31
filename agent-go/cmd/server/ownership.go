@@ -20,10 +20,15 @@ var ErrOwnershipConflict = errors.New("session is owned by another worker or lea
 var ErrLeaseLost = errors.New("session lease lost; stale worker must stop")
 var ErrSessionNotFound = errors.New("session not found")
 var ErrInvalidSessionID = errors.New("session id must be a UUID")
+var ErrTerminalSession = errors.New("Session is terminal; use POST /sessions/{id}/resume to continue it")
 
 func stringPointer(value string) *string { return &value }
 
 func (s *server) acquire(ctx context.Context, sessionID, ownerID string, seconds int) (int64, error) {
+	return s.acquireWithPolicy(ctx, sessionID, ownerID, seconds, false)
+}
+
+func (s *server) acquireWithPolicy(ctx context.Context, sessionID, ownerID string, seconds int, activeOnly bool) (int64, error) {
 	if seconds <= 0 || seconds > 3600 {
 		return 0, fmt.Errorf("lease duration must be in (0,3600] seconds")
 	}
@@ -31,8 +36,38 @@ func (s *server) acquire(ctx context.Context, sessionID, ownerID string, seconds
 	if err != nil {
 		return 0, fmt.Errorf("invalid owner identity: %w", err)
 	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+	fence, err := acquireLocked(ctx, tx, sessionID, owner, seconds, activeOnly)
+	if err != nil {
+		return 0, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return fence, nil
+}
+
+// Validate the run admission condition under the same row lock as the lease
+// update. Rejected terminal runs must not advance the session fence.
+func acquireLocked(ctx context.Context, tx pgx.Tx, sessionID string, owner uuid.UUID, seconds int, activeOnly bool) (int64, error) {
+	if activeOnly {
+		var status string
+		if err := tx.QueryRow(ctx, `SELECT state->>'status' FROM agent_sessions WHERE session_id=$1 FOR UPDATE`, sessionID).Scan(&status); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return 0, ErrSessionNotFound
+			}
+			return 0, err
+		}
+		if status != "active" {
+			return 0, ErrTerminalSession
+		}
+	}
 	var fence int64
-	err = s.db.QueryRow(ctx, `UPDATE agent_sessions SET lease_owner=$2,lease_fence=lease_fence+1,
+	err := tx.QueryRow(ctx, `UPDATE agent_sessions SET lease_owner=$2,lease_fence=lease_fence+1,
 		lease_expires_at=clock_timestamp()+($3 * interval '1 second')
 		WHERE session_id=$1 AND (lease_owner IS NULL OR lease_expires_at<=clock_timestamp())
 		RETURNING lease_fence`, sessionID, owner, seconds).Scan(&fence)
@@ -46,11 +81,6 @@ func (s *server) acquire(ctx context.Context, sessionID, ownerID string, seconds
 }
 
 func (s *server) renew(ctx context.Context, sessionID, ownerID string, fence int64, seconds int) error {
-	if s.renewFaultHook != nil {
-		if err := s.renewFaultHook(); err != nil {
-			return err
-		}
-	}
 	owner, err := uuid.Parse(ownerID)
 	if err != nil {
 		return ErrLeaseLost
@@ -67,6 +97,19 @@ func (s *server) renew(ctx context.Context, sessionID, ownerID string, fence int
 }
 
 func (s *server) checkRun(ctx context.Context, state *agent.Session) error {
+	if c := currentCommand(ctx); c != nil {
+		c.mu.Lock()
+		lost := c.lost
+		c.mu.Unlock()
+		if lost != nil {
+			return ErrLeaseLost
+		}
+		var valid bool
+		if err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM agent_commands WHERE command_id=$1 AND owner=$2 AND fence=$3 AND lease_expires_at>clock_timestamp())`, c.ID, c.Owner, c.Fence).Scan(&valid); err != nil || !valid {
+			return ErrLeaseLost
+		}
+	}
+
 	if state.ExecutionOwner == nil || state.ExecutionFence == nil || state.RunID == nil {
 		return ErrLeaseLost
 	}
@@ -181,7 +224,14 @@ func (s *server) reconcileAbandoned(ctx context.Context, limit int) ([]map[strin
 		}
 		event := map[string]any{"type": "run_interrupted", "run_id": candidate.runID,
 			"status": p.State.RunStatus, "reason": *p.State.RunTerminationReason}
-		if err = s.save(ctx, &p, event); err != nil {
+		adminCtx, adminCleanup, adminErr := s.administrativeCommand(ctx, p.State.ID, "/admin/reconcile", map[string]any{"session_id": p.State.ID, "run_id": candidate.runID})
+		if adminErr != nil {
+			cleanup()
+			return reconciled, adminErr
+		}
+		err = s.save(adminCtx, &p, event)
+		adminCleanup()
+		if err != nil {
 			cleanup()
 			return reconciled, err
 		}
@@ -205,6 +255,10 @@ func (s *server) release(sessionID, ownerID string, fence int64) {
 // ownSession claims database authority before hydrating state. A process-local
 // mutex is deliberately not part of the ownership decision.
 func (s *server) ownSession(parent context.Context, sessionID string) (persisted, context.Context, func(), error) {
+	return s.ownSessionWithPolicy(parent, sessionID, false)
+}
+
+func (s *server) ownSessionWithPolicy(parent context.Context, sessionID string, activeOnly bool) (persisted, context.Context, func(), error) {
 	parsed, err := uuid.Parse(sessionID)
 	if err != nil {
 		return persisted{}, nil, nil, ErrInvalidSessionID
@@ -226,7 +280,7 @@ func (s *server) ownSession(parent context.Context, sessionID string) (persisted
 	if renewInterval == 0 {
 		renewInterval = leaseRenewInterval
 	}
-	fence, err := s.acquire(parent, sessionID, ownerID, leaseSeconds)
+	fence, err := s.acquireWithPolicy(parent, sessionID, ownerID, leaseSeconds, activeOnly)
 	if err != nil {
 		return persisted{}, nil, nil, err
 	}

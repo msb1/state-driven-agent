@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"sync"
 )
 
@@ -47,4 +48,73 @@ func recoveryAdapter(name string) (IdempotentTool, ToolReconciler) {
 	recoveryAdapters.RLock()
 	defer recoveryAdapters.RUnlock()
 	return recoveryAdapters.idempotent[name], recoveryAdapters.reconcile[name]
+}
+
+// IdempotencyCapability is a trusted adapter declaration, never supplied by a model.
+// Nil RetentionSeconds is an explicit indefinite retention guarantee.
+type IdempotencyCapability struct {
+	Target, KeyScope string
+	RetentionSeconds *float64
+}
+type Verification struct {
+	Outcome           string
+	Evidence          map[string]any
+	Result            string
+	ExternalReference string
+}
+type ActionVerifier func(context.Context, map[string]any, string) (Verification, error)
+
+var durableAdapters = struct {
+	sync.RWMutex
+	capabilities map[string]IdempotencyCapability
+	verifiers    map[string]ActionVerifier
+}{capabilities: map[string]IdempotencyCapability{}, verifiers: map[string]ActionVerifier{}}
+
+func RegisterDurableIdempotentTool(name string, capability IdempotencyCapability, adapter IdempotentTool) func() {
+	if capability.Target == "" || capability.KeyScope == "" || (capability.RetentionSeconds != nil && *capability.RetentionSeconds <= 0) {
+		panic("invalid trusted idempotency capability")
+	}
+	undo := RegisterIdempotentTool(name, adapter)
+	durableAdapters.Lock()
+	durableAdapters.capabilities[name] = capability
+	durableAdapters.Unlock()
+	return func() {
+		undo()
+		durableAdapters.Lock()
+		delete(durableAdapters.capabilities, name)
+		durableAdapters.Unlock()
+	}
+}
+func RegisterActionVerifier(name string, verify ActionVerifier) func() {
+	durableAdapters.Lock()
+	durableAdapters.verifiers[name] = verify
+	durableAdapters.Unlock()
+	return func() { durableAdapters.Lock(); delete(durableAdapters.verifiers, name); durableAdapters.Unlock() }
+}
+func actionCapability(name string) (IdempotencyCapability, bool) {
+	durableAdapters.RLock()
+	defer durableAdapters.RUnlock()
+	capability, ok := durableAdapters.capabilities[name]
+	return capability, ok
+}
+
+func actionVerifier(name string) ActionVerifier {
+	durableAdapters.RLock()
+	defer durableAdapters.RUnlock()
+	return durableAdapters.verifiers[name]
+}
+func validateVerification(v Verification) error {
+	if len(v.Evidence) == 0 {
+		return fmt.Errorf("verification requires authoritative evidence")
+	}
+	switch v.Outcome {
+	case "succeeded", "failed":
+		if (v.Outcome == "failed") != (resultStatus(v.Result) == "failed") {
+			return fmt.Errorf("verification result status mismatch")
+		}
+	case "not_executed", "unknown":
+	default:
+		return fmt.Errorf("invalid verification outcome")
+	}
+	return nil
 }

@@ -220,10 +220,18 @@ __marimo__/
 # Files to ignore
 digest.md
 digest-go.md
+digest-rust.md
+digest-java.md
 answers.md
 
 /archive/
+/tests/
 agent-python/archive/
+# Preserve deprecated DU-06 source scripts; runtime evidence remains ignored.
+!agent-python/archive/
+agent-python/archive/*
+!agent-python/archive/du06-contract-1.1.0/
+!agent-python/archive/du06-contract-1.1.0/**
 agent-go/archive/
 agent-rust/archive/
 agent-java/archive/
@@ -295,3 +303,9 @@ target
 # virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
 hs_err_pid*
 replay_pid*
+
+# Preserve retired Go regression source while ignoring runtime archives.
+!agent-go/archive/
+agent-go/archive/*
+!agent-go/archive/contract-1.1.0-tests/
+!agent-go/archive/contract-1.1.0-tests/**

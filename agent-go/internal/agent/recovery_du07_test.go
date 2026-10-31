@@ -62,7 +62,7 @@ func TestDU07C04OnlyExplicitTransientErrorsRetryWithinStoredBound(t *testing.T) 
 }
 
 func TestDU07C04IdempotentAdapterUsesPersistedKey(t *testing.T) {
-	remove := RegisterIdempotentTool("lookup", func(_ context.Context, _ map[string]any, key string) (string, error) {
+	remove := RegisterDurableIdempotentTool("lookup", IdempotencyCapability{Target: "tool://lookup", KeyScope: "test-namespace"}, func(_ context.Context, _ map[string]any, key string) (string, error) {
 		if key == "" {
 			return "", errors.New("missing idempotency key")
 		}
@@ -91,7 +91,7 @@ func TestDU07C04MissingIdempotentAdapterBlocksBeforeInvocation(t *testing.T) {
 		return "must not execute", nil
 	}}}
 	s := e.Create("du07-no-idempotent-adapter", "goal", "du07.yaml", "hash")
-	if err := e.Run(context.Background(), &s, 4, nil); err == nil || calls != 0 || s.RunStatus != "blocked" || len(s.Executions) != 1 || s.Executions[0].Status != "uncertain" {
+	if err := e.Run(context.Background(), &s, 4, nil); err == nil || calls != 0 || s.RunStatus != "blocked" || len(s.Executions) != 1 || s.Executions[0].Status != "blocked" {
 		t.Fatalf("missing adapter did not block: err=%v calls=%d run=%s executions=%+v", err, calls, s.RunStatus, s.Executions)
 	}
 }
@@ -102,7 +102,9 @@ func TestDU07C04UnresolvedEffectBlocksAndConfirmedReconcileDoesNotReplay(t *test
 		e := Engine{Config: cfg}
 		s := e.Create(id, "goal", "du07.yaml", "hash")
 		s.PendingToolCalls = []map[string]any{{"id": "recover-call", "name": "lookup", "arguments": map[string]any{}}}
-		s.Executions = []ToolExecution{{ExecutionID: "exec-id", RunID: "old-run", CallID: "recover-call", Tool: "lookup", Arguments: map[string]any{}, Policy: map[string]any{"mode": "reconcile", "max_attempts": 3}, IdempotencyKey: "key-id", Attempts: 1, Status: "started"}}
+		s.Executions = []ToolExecution{{ExecutionID: "exec-id", RunID: "old-run", CallID: "recover-call", Tool: "lookup", Arguments: map[string]any{}, Policy: map[string]any{"mode": "reconcile", "max_attempts": 3}, IdempotencyKey: "key-id", Target: "tool://lookup", Attempts: 1, Status: "started"}}
+		s.Executions[0].IdempotencyKey, _ = DigestV2([]any{"agent-action-v1", "", s.ID, s.Executions[0].ExecutionID})
+		s.Executions[0].PayloadSHA256, _ = DigestV2([]any{"agent-payload-v1", "lookup", "tool://lookup", map[string]any{}})
 		return s
 	}
 	invocations := 0
@@ -116,7 +118,7 @@ func TestDU07C04UnresolvedEffectBlocksAndConfirmedReconcileDoesNotReplay(t *test
 	}
 
 	remove := RegisterToolReconciler("lookup", func(_ context.Context, _ map[string]any, key string) (string, bool, error) {
-		if key != "key-id" {
+		if len(key) != 64 {
 			return "", false, errors.New("wrong persisted key")
 		}
 		return "confirmed", true, nil

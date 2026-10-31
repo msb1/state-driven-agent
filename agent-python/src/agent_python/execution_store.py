@@ -2,40 +2,11 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 import psycopg
 from psycopg.rows import dict_row
 
 from .execution import OwnershipConflict, LeaseLost
-
-
-DDL = [
-    'ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS lease_owner UUID',
-    'ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS lease_fence BIGINT NOT NULL DEFAULT 0',
-    'ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ',
-    '''CREATE TABLE IF NOT EXISTS agent_runs (
-        run_id UUID PRIMARY KEY, session_id UUID NOT NULL REFERENCES agent_sessions(session_id) ON DELETE CASCADE,
-        owner UUID NOT NULL, fence BIGINT NOT NULL, status TEXT NOT NULL,
-        started_at TIMESTAMPTZ NOT NULL, ended_at TIMESTAMPTZ, termination_reason TEXT,
-        last_decision_step BIGINT NOT NULL, cancel_requested BOOLEAN NOT NULL DEFAULT FALSE,
-        cancel_requested_at TIMESTAMPTZ,
-        UNIQUE(session_id,run_id))''',
-    'CREATE INDEX IF NOT EXISTS agent_runs_active_idx ON agent_runs(session_id,status)',
-    '''CREATE TABLE IF NOT EXISTS agent_tool_executions (
-        execution_id UUID PRIMARY KEY, session_id UUID NOT NULL REFERENCES agent_sessions(session_id) ON DELETE CASCADE,
-        run_id UUID NOT NULL, call_id TEXT NOT NULL, tool TEXT NOT NULL, arguments JSONB NOT NULL,
-        policy JSONB NOT NULL, idempotency_key UUID NOT NULL, attempts INTEGER NOT NULL CHECK(attempts>=0),
-        status TEXT NOT NULL CHECK(status IN ('pending','started','succeeded','failed','uncertain')),
-        result TEXT, owner UUID NOT NULL, fence BIGINT NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now(), updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        started_at TIMESTAMPTZ, finished_at TIMESTAMPTZ,
-        UNIQUE(session_id,call_id),
-        FOREIGN KEY(session_id,run_id) REFERENCES agent_runs(session_id,run_id),
-        CHECK((status IN ('succeeded','failed')) = (result IS NOT NULL)))''',
-    'ALTER TABLE agent_runs ADD COLUMN IF NOT EXISTS cancel_requested_at TIMESTAMPTZ',
-    'ALTER TABLE agent_tool_executions ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ',
-    'ALTER TABLE agent_tool_executions ADD COLUMN IF NOT EXISTS finished_at TIMESTAMPTZ',
-    "INSERT INTO agent_schema_migrations(component,version) VALUES ('agent-python',4) ON CONFLICT DO NOTHING",
-]
 
 
 def encode(value):
@@ -79,22 +50,25 @@ class ExecutionStore:
                 raise LeaseLost('Lease no longer valid; reload before recovery.')
             return row[1]
 
-    async def cancel_run(self, session_id):
+    async def cancel_run(self, session_id, run_id=None):
         # Serialize with run-start/finish, so an acknowledged cancel targets a
         # committed running identity rather than racing an invisible new run.
         async with await psycopg.AsyncConnection.connect(self.database_url) as conn:
             await conn.execute('SELECT session_id FROM agent_sessions WHERE session_id=%s FOR UPDATE', (session_id,))
             cursor = await conn.execute("""UPDATE agent_runs SET cancel_requested=TRUE,
                 cancel_requested_at=COALESCE(cancel_requested_at,clock_timestamp())
-                WHERE session_id=%s AND status='running' RETURNING run_id::text""", (session_id,))
+                WHERE session_id=%s AND status='running' AND (%s::uuid IS NULL OR run_id=%s::uuid) RETURNING run_id::text""", (session_id,run_id,run_id))
             return [row[0] for row in await cursor.fetchall()]
 
     async def execution(self, session_id, call_id):
         async with await psycopg.AsyncConnection.connect(self.database_url, row_factory=dict_row) as conn:
             cursor = await conn.execute('''SELECT execution_id::text,run_id::text,call_id,tool,arguments,policy,
-                idempotency_key::text,attempts,status,result FROM agent_tool_executions
+                idempotency_key,attempts,status,result,command_id::text,namespace,target,payload_sha256,key_algorithm,created_at FROM agent_tool_executions
                 WHERE session_id=%s AND call_id=%s''', (session_id, call_id))
-            return await cursor.fetchone()
+            row = await cursor.fetchone()
+            if row:
+                row['created_at'] = row['created_at'].isoformat()
+            return row
 
     async def call_seen(self, session_id, call_id):
         async with await psycopg.AsyncConnection.connect(self.database_url) as conn:
@@ -104,7 +78,7 @@ class ExecutionStore:
     async def execution_history(self, session_id, after=None, limit=100):
         async with await psycopg.AsyncConnection.connect(self.database_url, row_factory=dict_row) as conn:
             cursor = await conn.execute('''SELECT execution_id::text,run_id::text,call_id,tool,arguments,policy,
-                idempotency_key::text,attempts,status,result,fence,created_at,updated_at,started_at,finished_at
+                idempotency_key,attempts,status,result,fence,created_at,updated_at,started_at,finished_at,command_id::text,namespace,target,payload_sha256,key_algorithm
                 FROM agent_tool_executions WHERE session_id=%s AND (%s::uuid IS NULL OR execution_id>%s::uuid)
                 ORDER BY execution_id LIMIT %s''', (session_id, after, after, limit))
             return await cursor.fetchall()
@@ -134,39 +108,79 @@ class ExecutionStore:
             raise OwnershipConflict('Unowned mutation rejected while a worker owns this session.')
 
     async def _write_execution(self, cursor, state):
+        from .commands import current_command
+        from .identity import canonical, action_key, payload_fingerprint
+        command = current_command.get()
         if state.execution_owner and not state.execution_maintenance and state.run_id and state.run_started_at:
-            await cursor.execute('''INSERT INTO agent_runs(run_id,session_id,owner,fence,status,started_at,ended_at,termination_reason,last_decision_step)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(run_id) DO UPDATE SET
-                owner=EXCLUDED.owner,fence=EXCLUDED.fence,status=EXCLUDED.status,ended_at=EXCLUDED.ended_at,
-                termination_reason=EXCLUDED.termination_reason,last_decision_step=EXCLUDED.last_decision_step
-                WHERE agent_runs.session_id=EXCLUDED.session_id''',
-                (state.run_id,state.id,state.execution_owner,state.execution_fence,state.run_status,
+            await cursor.execute('''INSERT INTO agent_runs(run_id,session_id,command_id,owner,fence,status,started_at,ended_at,termination_reason,last_decision_step)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT(run_id) DO UPDATE SET
+                status=EXCLUDED.status,ended_at=EXCLUDED.ended_at,termination_reason=EXCLUDED.termination_reason,
+                last_decision_step=EXCLUDED.last_decision_step
+                WHERE agent_runs.session_id=EXCLUDED.session_id AND agent_runs.command_id=EXCLUDED.command_id''',
+                (state.run_id,state.id,state.run_command_id,state.execution_owner,state.execution_fence,state.run_status,
                  state.run_started_at,state.run_ended_at,state.run_termination_reason,state.step_count))
+        fields = ['execution_id','run_id','call_id','tool','arguments','policy','command_id','namespace','target','idempotency_key','payload_sha256','key_algorithm']
         for item in state.execution_pending:
             if not 0 <= item['attempts'] <= item['policy']['max_attempts']:
-                raise ValueError('Execution attempts exceed the immutable policy limit')
+                raise ValueError('Execution attempts exceed immutable policy')
+            if item['namespace'] != command.namespace or item['idempotency_key'] != action_key(item['namespace'],state.id,item['execution_id']):
+                raise ValueError('Invalid deterministic action identity')
+            if item['payload_sha256'] != payload_fingerprint(item['tool'],item['target'],item['arguments']):
+                raise ValueError('Frozen action fingerprint changed')
             if item['status'] in {'succeeded','failed'}:
-                results = [m for m in state.memory if m.role == 'tool' and m.tool_call_id == item['call_id']]
-                if (len(results) != 1 or results[0].name != item['tool'] or results[0].content != item['result']
-                        or any(c['id'] == item['call_id'] for c in state.pending_tool_calls)):
-                    raise ValueError('Tool outcome must commit with exactly one correlated result and consumed pending call')
-            await cursor.execute('SELECT execution_id::text,tool,arguments,policy,idempotency_key::text,attempts,status,result FROM agent_tool_executions WHERE session_id=%s AND call_id=%s FOR UPDATE', (state.id,item['call_id']))
+                results = [m for m in state.memory if m.role=='tool' and m.tool_call_id==item['call_id']]
+                if (len(results)!=1 or results[0].name!=item['tool'] or results[0].content!=item['result']
+                        or any(c['id']==item['call_id'] for c in state.pending_tool_calls)):
+                    raise ValueError('Tool outcome requires correlated result and consumed pending call')
+            await cursor.execute('SELECT payload,attempts,status,result FROM agent_tool_executions WHERE session_id=%s AND call_id=%s FOR UPDATE', (state.id,item['call_id']))
             old = await cursor.fetchone()
-            identity = (item['execution_id'],item['tool'],item['arguments'],item['policy'],item['idempotency_key'])
-            if old and (encode(old[:5]) != encode(identity) or item['attempts'] < old[5]
-                        or item['attempts'] > old[5]+1
-                        or (old[6] in {'succeeded','failed'} and (item['attempts'],item['status'],item['result']) != old[5:8])):
-                raise ValueError('Tool execution identity/attempt/result cannot be rewritten')
-            if state.execution_owner is None:
-                raise OwnershipConflict('Tool execution writes require ownership')
-            await cursor.execute('''INSERT INTO agent_tool_executions(execution_id,session_id,run_id,call_id,tool,arguments,policy,idempotency_key,attempts,status,result,owner,fence)
-                VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT(session_id,call_id) DO UPDATE SET run_id=EXCLUDED.run_id,attempts=EXCLUDED.attempts,
-                status=EXCLUDED.status,result=EXCLUDED.result,owner=EXCLUDED.owner,fence=EXCLUDED.fence,updated_at=clock_timestamp()''',
-                (item['execution_id'],state.id,item['run_id'],item['call_id'],item['tool'],encode(item['arguments']),
-                 encode(item['policy']),item['idempotency_key'],item['attempts'],item['status'],item['result'],
-                 state.execution_owner,state.execution_fence))
+            if old:
+                if (canonical([old[0][key] for key in fields]) != canonical([item[key] for key in fields])
+                        or item['attempts']<old[1] or item['attempts']>old[1]+1
+                        or old[2] in ('succeeded','failed') and (item['attempts'],item['status'],item['result'])!=old[1:]):
+                    raise ValueError('Execution identity, attempts or terminal outcome changed')
+            if not state.execution_owner:
+                raise OwnershipConflict('Execution writes require session ownership')
+            await cursor.execute('''INSERT INTO agent_tool_executions(execution_id,session_id,run_id,call_id,tool,arguments,policy,
+                command_id,namespace,target,idempotency_key,payload_sha256,key_algorithm,attempts,status,result,owner,fence,payload)
+                VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
+                ON CONFLICT(session_id,call_id) DO UPDATE SET attempts=EXCLUDED.attempts,status=EXCLUDED.status,
+                result=EXCLUDED.result,owner=EXCLUDED.owner,fence=EXCLUDED.fence,payload=EXCLUDED.payload,updated_at=clock_timestamp()''',
+                (item['execution_id'],state.id,item['run_id'],item['call_id'],item['tool'],encode(item['arguments']),encode(item['policy']),
+                 item['command_id'],item['namespace'],item['target'],item['idempotency_key'],item['payload_sha256'],item['key_algorithm'],
+                 item['attempts'],item['status'],item['result'],state.execution_owner,state.execution_fence,encode(item)))
             await cursor.execute('''UPDATE agent_tool_executions SET
-                started_at=CASE WHEN status='started' THEN clock_timestamp() ELSE started_at END,
+                started_at=CASE WHEN status='started' THEN COALESCE(started_at,clock_timestamp()) ELSE started_at END,
                 finished_at=CASE WHEN status IN ('succeeded','failed') THEN COALESCE(finished_at,clock_timestamp()) ELSE NULL END
                 WHERE execution_id=%s''', (item['execution_id'],))
+        for item in state.attempts_pending:
+            await cursor.execute('''SELECT attempt_id::text,payload_sha256,command_id::text,owner::text,fence,kind,status
+                ,external_reference,evidence,error,started_at,finished_at
+                FROM agent_action_attempts WHERE execution_id=%s AND attempt_number=%s FOR UPDATE''', (item['execution_id'],item['attempt_number']))
+            old = await cursor.fetchone()
+            identity = (item['attempt_id'],item['payload_sha256'],item['command_id'],item['owner'],item['fence'],item['kind'])
+            if old and (old[:6]!=identity or old[6]!='started' and old[6]!=item['status']):
+                raise ValueError('Attempt identity or settled outcome changed')
+            if old and old[10] != datetime.fromisoformat(item['started_at']):
+                raise ValueError('Attempt start time changed')
+            if old and old[6]!='started':
+                if (canonical(list(old[7:10])) != canonical([item.get('external_reference'),item.get('evidence'),item.get('error')])
+                        or old[11] != datetime.fromisoformat(item['finished_at'])):
+                    raise ValueError('Settled attempt evidence changed')
+            if not old:
+                await cursor.execute('SELECT COALESCE(max(attempt_number),0)+1 FROM agent_action_attempts WHERE execution_id=%s',(item['execution_id'],))
+                if (await cursor.fetchone())[0] != item['attempt_number']:
+                    raise ValueError('Attempt number contains a gap')
+            await cursor.execute('''INSERT INTO agent_action_attempts(attempt_id,session_id,execution_id,command_id,attempt_number,
+                kind,status,payload_sha256,owner,fence,external_reference,evidence,error,started_at,finished_at)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s,%s)
+                ON CONFLICT(execution_id,attempt_number) DO UPDATE SET status=EXCLUDED.status,
+                external_reference=EXCLUDED.external_reference,evidence=EXCLUDED.evidence,error=EXCLUDED.error,finished_at=EXCLUDED.finished_at''',
+                (item['attempt_id'],state.id,item['execution_id'],item['command_id'],item['attempt_number'],item['kind'],item['status'],
+                 item['payload_sha256'],item['owner'],item['fence'],item.get('external_reference'),encode(item.get('evidence')),
+                 encode(item.get('error')),item['started_at'],item.get('finished_at')))
+
+    async def next_attempt(self, execution_id):
+        async with await psycopg.AsyncConnection.connect(self.database_url) as db:
+            cursor = await db.execute('SELECT COALESCE(max(attempt_number),0)+1 FROM agent_action_attempts WHERE execution_id=%s', (execution_id,))
+            return (await cursor.fetchone())[0]

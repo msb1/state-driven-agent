@@ -76,7 +76,7 @@ class AgentEngine:
                 await self._emit(emit, {"type": "interim_result", "step": "phase_completed", **transition})
             try:
                 await self._compact_if_needed(state, emit)
-                state.request_budget = require_budget(self._formatter.decision_payload(self._payload(state)), self._config.memory)
+                state.request_budget = require_budget(self._decision_payload(state), self._config.memory)
             except (ModelServiceError, ValueError, KeyError, IndexError, TypeError) as error:
                 diagnostic = exception_diagnostic(error)
                 await self._fail(state, emit, diagnostic["code"], diagnostic["message"], diagnostic=diagnostic)
@@ -426,6 +426,9 @@ class AgentEngine:
             payload.append(Message(role="system", content="\n".join(final_parts)))
         return payload
 
+    def _decision_payload(self, state: SessionState) -> dict[str, Any]:
+        return self._formatter.decision_payload(self._payload(state))
+
     def _workflow_instruction(self, state: SessionState) -> str | None:
         if not self._config.workflow or not state.workflow:
             return None
@@ -486,6 +489,9 @@ class AgentEngine:
                 if previous not in state.workflow.completed_phases:
                     state.workflow.completed_phases.append(previous)
                 state.workflow.active_phase = None if transition.to == "complete" else transition.to
+                # Invalid model actions from the completed phase are no longer
+                # consecutive once verified phase evidence advances the work.
+                state.consecutive_invalid_responses, state.last_error = 0, None
                 state.workflow.transitions.append(
                     WorkflowTransition(from_phase=previous, to_phase=transition.to, reason=transition.when)
                 )
@@ -553,7 +559,7 @@ class AgentEngine:
         changed = False
         for _ in range(policy.compaction_max_passes):
             groups, tail = split_history(state.memory[1:], policy.raw_turns_to_keep)
-            measured = budget(self._formatter.decision_payload(self._payload(state)), policy)
+            measured = budget(self._decision_payload(state), policy)
             state.request_budget = measured
             interval_due = (policy.compaction_interval_steps is not None and
                             state.step_count - state.last_compaction_step >= policy.compaction_interval_steps)
@@ -598,7 +604,7 @@ class AgentEngine:
             raw = remaining + tail
             protected = state.model_copy(deep=True)
             protected.memory, protected.compacted_context = [state.memory[0], *raw], None
-            floor = budget(self._formatter.decision_payload(self._payload(protected)), policy)['estimated_input_tokens']
+            floor = budget(self._decision_payload(protected), policy)['estimated_input_tokens']
             reclaimable = max(0, measured['estimated_input_tokens'] - floor)
             required_reduction = 1 if hard_pressure else max(1, policy.optional_compaction_min_reduction_tokens,
                 math.ceil(measured['estimated_input_tokens'] * policy.optional_compaction_min_reduction_ratio))
@@ -636,7 +642,7 @@ class AgentEngine:
                     proposed = state.model_copy(deep=True)
                     proposed.memory = [state.memory[0], *raw]
                     proposed.compacted_context = canonical
-                    after = budget(self._formatter.decision_payload(self._payload(proposed)), policy)
+                    after = budget(self._decision_payload(proposed), policy)
                     reduction = measured['estimated_input_tokens'] - after['estimated_input_tokens']
                     record.update(after_estimated_tokens=after['estimated_input_tokens'], reduction_tokens=reduction,
                                   reduction_ratio=reduction / max(1, measured['estimated_input_tokens']))

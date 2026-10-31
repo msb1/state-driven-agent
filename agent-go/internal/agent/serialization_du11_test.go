@@ -14,7 +14,8 @@ func TestDU11C01SourceWireSerializationMatchesPythonContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "Goal: goal\nPrevious ledger: none\nHistorical prefix:\n[{\"content\": \"A<&\\u2028\", \"role\": \"assistant\"}]"
+	// Python source_text uses ensure_ascii=False, including literal U+2028.
+	want := "Goal: goal\nPrevious ledger: none\nHistorical prefix:\n[{\"content\": \"A<&\u2028\", \"role\": \"assistant\"}]"
 	if got != want {
 		t.Fatalf("source wire mismatch\n got: %s\nwant: %s", got, want)
 	}
@@ -45,7 +46,9 @@ func TestDU11C04AllSharedWorkflowProfilesResolve(t *testing.T) {
 	// make an otherwise equivalent config appear to have a different identity.
 	t.Setenv("MAIN_MODEL", "qwen2.5-7b-instruct-mlx")
 	t.Setenv("OPENAI_BASE_URL", "https://du11-fixture.invalid/v1")
-	wantHashes := []string{"28aaed6c55ad854d72dc0ad0c069253c85c949e987b8c6f09b27b2e3aaa59132", "740bedd1e2989ed32c261b2664006ea734902cd12fa1f842e074ddee29692731", "f4c88391e56765d03af5f4d49b9e79f73b7ae70a979fe3aef857ab7c3fb0c202", "6c894a09bb5d0523c2cc3f43780d3be13a310e798b165d769301ff3851e5f141", "0b32fac762ae37dbb234644acfb9272587f316769f16d7be4a7037848bbd8389", "eaf52c77d961801c3c9d89bd66c0ccebeecc999576048328507a9594dbd34dab"}
+	// Regenerated from Python for the current shared YAML profiles (including
+	// the 180-second log-analysis timeout and current compaction stress policy).
+	wantHashes := []string{"256639f4b06108358687ded0ac3f7b081a20056ddee798125d049468b0a84a3d", "4c53575fc80cae25f36e92777d37875874086c7258b41608a9f1e6b2b121083e", "f4c88391e56765d03af5f4d49b9e79f73b7ae70a979fe3aef857ab7c3fb0c202", "2a55de0ce96681129de80c25afb69c12316e0a29ff3540b9c6398f59077d61b4", "0b32fac762ae37dbb234644acfb9272587f316769f16d7be4a7037848bbd8389", "eaf52c77d961801c3c9d89bd66c0ccebeecc999576048328507a9594dbd34dab"}
 	for i, ref := range refs {
 		s, err := LoadSnapshot("../../../config", ref)
 		if err != nil {

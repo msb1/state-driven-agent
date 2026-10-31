@@ -17,7 +17,7 @@ agent:
     base_url: ${OPENAI_BASE_URL:-http://127.0.0.1:8080/v1}
     api_key_env: OPENAI_API_KEY
     temperature: 0.1
-    timeout_seconds: 90
+    timeout_seconds: 180
   memory:
     max_tokens: 12000
     max_steps: 40
@@ -149,6 +149,11 @@ agent:
         required: true
       - description: The final employee audit validator confirmed every phase.
         tool: validate_employee_audit
+        arguments:
+          phase_1_logged: true
+          median_salary: 92500.0
+          normalize_city: true
+          drop_invalid_age: true
         result:
           valid: true
         required: true

@@ -133,6 +133,19 @@ type Phase struct {
 	Transitions     []Edge     `yaml:"transitions" json:"transitions"`
 }
 
+func (p *Phase) UnmarshalJSON(data []byte) error {
+	type raw Phase
+	var v raw
+	if err := decodeConfigJSON(data, &v); err != nil {
+		return err
+	}
+	*p = Phase(v)
+	// Preserve Python's None versus [] distinction across the server's persisted
+	// JSON boundary. The YAML-only flag itself is deliberately not persisted.
+	p.AllowedToolsSet = p.AllowedTools != nil
+	return nil
+}
+
 func (p *Phase) UnmarshalYAML(n *yaml.Node) error {
 	type raw Phase
 	var v raw
@@ -164,6 +177,91 @@ type Config struct {
 	Tools        []ToolDefinition `yaml:"tools" json:"tools"`
 	Workflow     *WorkflowConfig  `yaml:"workflow" json:"workflow"`
 }
+
+func (c Config) MarshalJSON() ([]byte, error) {
+	// Python retains integer versus decimal values inside schemas/evidence. Go's
+	// default encoder collapses integral floats, changing both prompts and hashes.
+	value, err := canonicalValue(reflect.ValueOf(c))
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(value)
+}
+
+func (c *Config) UnmarshalJSON(data []byte) error {
+	type raw Config
+	var value raw
+	if err := decodeConfigJSON(data, &value); err != nil {
+		return err
+	}
+	*c = Config(value)
+	return nil
+}
+
+func decodeConfigJSON(data []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	return restoreConfigNumbers(reflect.ValueOf(target).Elem())
+}
+
+func restoreConfigNumbers(value reflect.Value) error {
+	if !value.IsValid() {
+		return nil
+	}
+	if value.Kind() == reflect.Interface {
+		if number, ok := value.Interface().(json.Number); ok {
+			if !strings.ContainsAny(number.String(), ".eE") {
+				n, err := number.Int64()
+				if err != nil {
+					return err
+				}
+				value.Set(reflect.ValueOf(n))
+			} else {
+				n, err := number.Float64()
+				if err != nil {
+					return err
+				}
+				value.Set(reflect.ValueOf(n))
+			}
+			return nil
+		}
+		return restoreConfigNumbers(value.Elem())
+	}
+	switch value.Kind() {
+	case reflect.Pointer:
+		if !value.IsNil() {
+			return restoreConfigNumbers(value.Elem())
+		}
+	case reflect.Struct:
+		for i := 0; i < value.NumField(); i++ {
+			if value.Field(i).CanSet() {
+				if err := restoreConfigNumbers(value.Field(i)); err != nil {
+					return err
+				}
+			}
+		}
+	case reflect.Map:
+		for _, key := range value.MapKeys() {
+			item := reflect.New(value.Type().Elem()).Elem()
+			item.Set(value.MapIndex(key))
+			if err := restoreConfigNumbers(item); err != nil {
+				return err
+			}
+			value.SetMapIndex(key, item)
+		}
+	case reflect.Slice:
+		for i := 0; i < value.Len(); i++ {
+			if err := restoreConfigNumbers(value.Index(i)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 type fileConfig struct {
 	Agent Config `yaml:"agent"`
 }

@@ -188,9 +188,23 @@ func TestDU01C04StrictArgumentsAndNoAdapterCall(t *testing.T) {
 	if issues := validateArguments(invalid, boundary, "$"); len(issues) < 3 {
 		t.Fatalf("expected enum/string/array/item validation failures, got %v", issues)
 	}
+	nested := map[string]any{"type": "object", "properties": map[string]any{"rows": map[string]any{"type": "array", "minItems": 1, "items": map[string]any{"type": "object", "required": []any{"n"}, "properties": map[string]any{"n": map[string]any{"type": "integer", "minimum": 1, "maximum": 5}, "mode": map[string]any{"type": "string", "enum": []any{"robust"}}}}}}, "required": []any{"rows"}}
+	goodNested, _ := strictJSON([]byte(`{"rows":[{"n":2,"mode":"robust"}]}`))
+	if issues := validateArguments(goodNested, nested, "$"); len(issues) != 0 {
+		t.Fatalf("valid nested boundary values rejected: %v", issues)
+	}
+	for _, raw := range []string{`{"rows":[]}`, `{"rows":[{"n":true}]}`, `{"rows":[{"n":6}]}`, `{"rows":[{"n":2,"mode":"naive"}]}`} {
+		v, e := strictJSON([]byte(raw))
+		if e != nil {
+			t.Fatal(e)
+		}
+		if issues := validateArguments(v, nested, "$"); len(issues) == 0 {
+			t.Errorf("expected nested schema rejection for %s", raw)
+		}
+	}
 	var calls atomic.Int32
 	e := Engine{Config: Config{Tools: []ToolDefinition{{Name: "sample_tool", Parameters: schema}}}, Tools: map[string]Tool{"sample_tool": func(_ context.Context, _ map[string]any) (string, error) { calls.Add(1); return "ok", nil }}}
-	if got, _ := e.call(context.Background(), &Session{}, Decision{Name: "sample_tool", Arguments: map[string]any{"x": "1"}}, nil); !strings.Contains(got, "invalid arguments") {
+	if got, _ := e.call(context.Background(), &Session{}, Decision{Name: "sample_tool", Arguments: map[string]any{"x": "1"}}, nil); !strings.Contains(got, "action rejected before execution") || !strings.Contains(got, "Argument-shape example") {
 		t.Fatalf("expected actionable validation error, got %q", got)
 	}
 	if calls.Load() != 0 {

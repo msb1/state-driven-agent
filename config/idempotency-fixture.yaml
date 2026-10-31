@@ -1,0 +1,27 @@
+agent:
+  name: idempotency-fixture
+  system_prompt: >-
+    Invoke fixture_idempotent_write once with the exact value requested by the user.
+    Report its returned effect_id and value. This is a controlled test receipt, not a real external action.
+  model: ${MAIN_MODEL:-qwen2.5-7b-instruct-mlx}
+  llm:
+    base_url: ${OPENAI_BASE_URL:-http://127.0.0.1:8080/v1}
+    tool_call_mode: native
+  memory:
+    max_tokens: 6000
+    max_steps: 6
+    raw_turns_to_keep: 3
+    hybrid_reflection: true
+  tools:
+    - name: fixture_idempotent_write
+      description: Atomically store a controlled fixture effect and its keyed receipt.
+      parameters:
+        type: object
+        properties:
+          value:
+            type: string
+        required: [value]
+        additionalProperties: false
+      recovery:
+        mode: idempotent
+        max_attempts: 3

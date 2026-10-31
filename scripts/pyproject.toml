@@ -1,0 +1,14 @@
+[project]
+name = "sda-shared-persistence-tests"
+version = "0.1.0"
+description = "Language-agnostic API and PostgreSQL qualification harness"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.28.1",
+    "psycopg[binary]>=3.2.0",
+    "python-dotenv>=1.0.1",
+    "rfc8785>=0.1.4,<0.2",
+]
+
+[tool.uv]
+package = false

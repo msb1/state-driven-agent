@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 from datetime import datetime, timezone
-from uuid import uuid4
+from uuid import UUID, uuid4
 from pydantic import BaseModel, Field
 
 
@@ -60,6 +60,7 @@ class SessionState(BaseModel):
     active_ledger_id: str | None = None
     history_complete: bool = True
     run_id: str | None = None
+    run_command_id: str | None = None
     pending_commit_id: str | None = None
     # Durable continuation/lifecycle. Ownership and write outboxes are private.
     run_status: Literal['idle', 'running', 'complete', 'failed', 'cancelled', 'interrupted', 'blocked'] = 'idle'
@@ -71,6 +72,8 @@ class SessionState(BaseModel):
     execution_fence: int | None = Field(default=None, exclude=True)
     execution_maintenance: bool = Field(default=False, exclude=True)
     execution_pending: list[dict[str, Any]] = Field(default_factory=list, exclude=True)
+    attempts_pending: list[dict[str, Any]] = Field(default_factory=list, exclude=True)
+    needs_reload: bool = Field(default=False, exclude=True)
     consecutive_invalid_responses: int = 0
     no_progress_steps: int = 0
     progress_fingerprint: str | None = None
@@ -108,12 +111,14 @@ class SessionState(BaseModel):
 
 
 class CreateSessionRequest(BaseModel):
+    model_config = {'extra': 'forbid'}
     user_prompt: str = Field(min_length=1, description="The user's goal; becomes the first session-memory message.")
     config_ref: str = Field(default="log-analysis.yaml", min_length=1, description="Relative YAML path inside the server-approved config repository.")
 
 
 class RunRequest(BaseModel):
-    max_steps: int | None = Field(default=None, ge=1, le=50)
+    model_config = {'extra': 'forbid'}
+    max_steps: int | None = Field(default=None, ge=1, le=50, strict=True)
 
 
 class ResumeSessionRequest(RunRequest):
@@ -123,7 +128,13 @@ class ResumeSessionRequest(RunRequest):
 
 
 class AppendUserMessageRequest(BaseModel):
+    model_config = {'extra': 'forbid'}
     content: str = Field(min_length=1, description="Additional user input appended to the active session memory.")
+
+
+class CancelSessionRequest(BaseModel):
+    model_config = {'extra': 'forbid'}
+    run_id: UUID
 
 
 class SessionResponse(BaseModel):

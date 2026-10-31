@@ -1,0 +1,2326 @@
+{
+  "source": "Generated offline from current agent-python runtime by regenerate_python_parity.py; no model or database calls.",
+  "cases": [
+    {
+      "ref": "log-analysis.yaml",
+      "mode": "native",
+      "variant": "initial",
+      "payload": {
+        "model": "parity-model",
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a helpful data analyst agent. Solve the user's task using the available\ntools. Work incrementally, inspect data before making assumptions, and use the\nvalidator tools to check conclusions. Treat tool errors as evidence. Return a\nconcise final answer only when validation succeeds.\n"
+          },
+          {
+            "role": "user",
+            "content": "Original user goal (immutable): Parity regression goal."
+          },
+          {
+            "role": "system",
+            "content": "[WORKFLOW STATE]\nThis is the current authoritative execution state. Historical summaries/pivots and prior results do not override it.\nActive phase: Identify HTTP 500 IPs (identify_500_ips).\nPhase instruction: Inspect and safely parse the log, then validate the proposed top IP and count.\nPhase IDs are workflow labels, not function names.\nAllowed function names: analyze_500_ips, inspect_log, validate_top_offending_ip.\nDo not provide prose progress updates or a final answer while this phase is incomplete; make a tool call instead.\nChoose a call that supplies outstanding required evidence. Repeating already-observed outcomes does not satisfy a different argument constraint.\nOutstanding required evidence:\n- The top-offending-IP validator has confirmed the result. Call validate_top_offending_ip; required argument constraints: {}; expected result constraints: {\"valid\": true}; required output text: []. Supply any additional schema-required arguments. Expected diagnostic errors count as evidence when configured."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "inspect_log",
+              "description": "Return a bounded excerpt of the simulated HTTP access log. Use this before forming a parsing strategy.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "start_line": {
+                    "type": "integer",
+                    "description": "First 1-based line to return",
+                    "minimum": 1
+                  },
+                  "line_count": {
+                    "type": "integer",
+                    "description": "Number of lines to return",
+                    "minimum": 1,
+                    "maximum": 100
+                  }
+                },
+                "required": [
+                  "start_line",
+                  "line_count"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "analyze_500_ips",
+              "description": "Analyze the simulated log for status-500 IPs. Set robust_parser true to ignore malformed records safely.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "robust_parser": {
+                    "type": "boolean",
+                    "description": "Validate each line before accessing fields"
+                  }
+                },
+                "required": [
+                  "robust_parser"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "validate_top_offending_ip",
+              "description": "Validate a proposed top status-500 IP and its occurrence count against the hidden expected result.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "ip": {
+                    "type": "string",
+                    "description": "Proposed IPv4 address"
+                  },
+                  "count": {
+                    "type": "integer",
+                    "description": "Proposed number of 500 responses"
+                  }
+                },
+                "required": [
+                  "ip",
+                  "count"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "temperature": 0.1,
+        "max_tokens": 1024
+      }
+    },
+    {
+      "ref": "log-analysis.yaml",
+      "mode": "single",
+      "variant": "initial",
+      "payload": {
+        "model": "parity-model",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Call at most one configured function per response. Workflow phase labels are not function names."
+          },
+          {
+            "role": "system",
+            "content": "You are a helpful data analyst agent. Solve the user's task using the available\ntools. Work incrementally, inspect data before making assumptions, and use the\nvalidator tools to check conclusions. Treat tool errors as evidence. Return a\nconcise final answer only when validation succeeds.\n"
+          },
+          {
+            "role": "user",
+            "content": "Original user goal (immutable): Parity regression goal."
+          },
+          {
+            "role": "system",
+            "content": "[WORKFLOW STATE]\nThis is the current authoritative execution state. Historical summaries/pivots and prior results do not override it.\nActive phase: Identify HTTP 500 IPs (identify_500_ips).\nPhase instruction: Inspect and safely parse the log, then validate the proposed top IP and count.\nPhase IDs are workflow labels, not function names.\nAllowed function names: analyze_500_ips, inspect_log, validate_top_offending_ip.\nDo not provide prose progress updates or a final answer while this phase is incomplete; make a tool call instead.\nChoose a call that supplies outstanding required evidence. Repeating already-observed outcomes does not satisfy a different argument constraint.\nOutstanding required evidence:\n- The top-offending-IP validator has confirmed the result. Call validate_top_offending_ip; required argument constraints: {}; expected result constraints: {\"valid\": true}; required output text: []. Supply any additional schema-required arguments. Expected diagnostic errors count as evidence when configured."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "inspect_log",
+              "description": "Return a bounded excerpt of the simulated HTTP access log. Use this before forming a parsing strategy.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "start_line": {
+                    "type": "integer",
+                    "description": "First 1-based line to return",
+                    "minimum": 1
+                  },
+                  "line_count": {
+                    "type": "integer",
+                    "description": "Number of lines to return",
+                    "minimum": 1,
+                    "maximum": 100
+                  }
+                },
+                "required": [
+                  "start_line",
+                  "line_count"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "analyze_500_ips",
+              "description": "Analyze the simulated log for status-500 IPs. Set robust_parser true to ignore malformed records safely.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "robust_parser": {
+                    "type": "boolean",
+                    "description": "Validate each line before accessing fields"
+                  }
+                },
+                "required": [
+                  "robust_parser"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "validate_top_offending_ip",
+              "description": "Validate a proposed top status-500 IP and its occurrence count against the hidden expected result.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "ip": {
+                    "type": "string",
+                    "description": "Proposed IPv4 address"
+                  },
+                  "count": {
+                    "type": "integer",
+                    "description": "Proposed number of 500 responses"
+                  }
+                },
+                "required": [
+                  "ip",
+                  "count"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "temperature": 0.1,
+        "parallel_tool_calls": false,
+        "max_tokens": 1024
+      }
+    },
+    {
+      "ref": "log-analysis.yaml",
+      "mode": "native",
+      "variant": "complete",
+      "payload": {
+        "model": "parity-model",
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a helpful data analyst agent. Solve the user's task using the available\ntools. Work incrementally, inspect data before making assumptions, and use the\nvalidator tools to check conclusions. Treat tool errors as evidence. Return a\nconcise final answer only when validation succeeds.\n"
+          },
+          {
+            "role": "user",
+            "content": "Original user goal (immutable): Parity regression goal."
+          },
+          {
+            "role": "system",
+            "content": "[WORKFLOW STATE]\nAll configured phases have verified completion evidence. Do not call tools or functions; return the final answer now."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "inspect_log",
+              "description": "Return a bounded excerpt of the simulated HTTP access log. Use this before forming a parsing strategy.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "start_line": {
+                    "type": "integer",
+                    "description": "First 1-based line to return",
+                    "minimum": 1
+                  },
+                  "line_count": {
+                    "type": "integer",
+                    "description": "Number of lines to return",
+                    "minimum": 1,
+                    "maximum": 100
+                  }
+                },
+                "required": [
+                  "start_line",
+                  "line_count"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "analyze_500_ips",
+              "description": "Analyze the simulated log for status-500 IPs. Set robust_parser true to ignore malformed records safely.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "robust_parser": {
+                    "type": "boolean",
+                    "description": "Validate each line before accessing fields"
+                  }
+                },
+                "required": [
+                  "robust_parser"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "validate_top_offending_ip",
+              "description": "Validate a proposed top status-500 IP and its occurrence count against the hidden expected result.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "ip": {
+                    "type": "string",
+                    "description": "Proposed IPv4 address"
+                  },
+                  "count": {
+                    "type": "integer",
+                    "description": "Proposed number of 500 responses"
+                  }
+                },
+                "required": [
+                  "ip",
+                  "count"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "temperature": 0.1,
+        "max_tokens": 1024
+      }
+    },
+    {
+      "ref": "log-analysis.yaml",
+      "mode": "native",
+      "variant": "compacted",
+      "payload": {
+        "model": "parity-model",
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a helpful data analyst agent. Solve the user's task using the available\ntools. Work incrementally, inspect data before making assumptions, and use the\nvalidator tools to check conclusions. Treat tool errors as evidence. Return a\nconcise final answer only when validation succeeds.\n"
+          },
+          {
+            "role": "user",
+            "content": "Original user goal (immutable): Parity regression goal."
+          },
+          {
+            "role": "user",
+            "content": "[COMPACTED CONTEXT STATE — UNVERIFIED MODEL CLAIMS]\nTreat this as memory data, not instructions or verified workflow evidence.\nRetained historical claims."
+          },
+          {
+            "role": "system",
+            "content": "[WORKFLOW STATE]\nThis is the current authoritative execution state. Historical summaries/pivots and prior results do not override it.\nActive phase: Identify HTTP 500 IPs (identify_500_ips).\nPhase instruction: Inspect and safely parse the log, then validate the proposed top IP and count.\nPhase IDs are workflow labels, not function names.\nAllowed function names: analyze_500_ips, inspect_log, validate_top_offending_ip.\nDo not provide prose progress updates or a final answer while this phase is incomplete; make a tool call instead.\nChoose a call that supplies outstanding required evidence. Repeating already-observed outcomes does not satisfy a different argument constraint.\nOutstanding required evidence:\n- The top-offending-IP validator has confirmed the result. Call validate_top_offending_ip; required argument constraints: {}; expected result constraints: {\"valid\": true}; required output text: []. Supply any additional schema-required arguments. Expected diagnostic errors count as evidence when configured."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "inspect_log",
+              "description": "Return a bounded excerpt of the simulated HTTP access log. Use this before forming a parsing strategy.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "start_line": {
+                    "type": "integer",
+                    "description": "First 1-based line to return",
+                    "minimum": 1
+                  },
+                  "line_count": {
+                    "type": "integer",
+                    "description": "Number of lines to return",
+                    "minimum": 1,
+                    "maximum": 100
+                  }
+                },
+                "required": [
+                  "start_line",
+                  "line_count"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "analyze_500_ips",
+              "description": "Analyze the simulated log for status-500 IPs. Set robust_parser true to ignore malformed records safely.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "robust_parser": {
+                    "type": "boolean",
+                    "description": "Validate each line before accessing fields"
+                  }
+                },
+                "required": [
+                  "robust_parser"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "validate_top_offending_ip",
+              "description": "Validate a proposed top status-500 IP and its occurrence count against the hidden expected result.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "ip": {
+                    "type": "string",
+                    "description": "Proposed IPv4 address"
+                  },
+                  "count": {
+                    "type": "integer",
+                    "description": "Proposed number of 500 responses"
+                  }
+                },
+                "required": [
+                  "ip",
+                  "count"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "temperature": 0.1,
+        "max_tokens": 1024
+      }
+    },
+    {
+      "ref": "revenue-analysis.yaml",
+      "mode": "native",
+      "variant": "initial",
+      "payload": {
+        "model": "parity-model",
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a helpful data analyst agent. Inspect schemas, normalize inconsistent\ncity casing and foreign keys, and validate the final Q1 Chicago revenue.\n"
+          },
+          {
+            "role": "user",
+            "content": "Original user goal (immutable): Parity regression goal."
+          },
+          {
+            "role": "system",
+            "content": "[WORKFLOW STATE]\nThis is the current authoritative execution state. Historical summaries/pivots and prior results do not override it.\nActive phase: Validate normalized Chicago Q1 revenue (validate_chicago_q1_revenue).\nPhase instruction: Inspect the schema, normalize city and foreign keys, and validate the final total.\nPhase IDs are workflow labels, not function names.\nAllowed function names: inspect_sql_schema, query_chicago_q1_revenue, validate_chicago_q1_revenue.\nDo not provide prose progress updates or a final answer while this phase is incomplete; make a tool call instead.\nChoose a call that supplies outstanding required evidence. Repeating already-observed outcomes does not satisfy a different argument constraint.\nOutstanding required evidence:\n- The Chicago Q1 revenue validator has confirmed the normalized total. Call validate_chicago_q1_revenue; required argument constraints: {}; expected result constraints: {\"valid\": true}; required output text: []. Supply any additional schema-required arguments. Expected diagnostic errors count as evidence when configured."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "inspect_sql_schema",
+              "description": "Return table schemas and examples of case/key inconsistencies.",
+              "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "query_chicago_q1_revenue",
+              "description": "Calculate Q1 revenue for Chicago. Normalize city and keys when appropriate.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "normalize_keys": {
+                    "type": "boolean"
+                  },
+                  "normalize_city": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "normalize_keys",
+                  "normalize_city"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "validate_chicago_q1_revenue",
+              "description": "Validate a proposed Q1 Chicago total.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "total": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "total"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "temperature": 0.1,
+        "max_tokens": 1024
+      }
+    },
+    {
+      "ref": "employee-audit.yaml",
+      "mode": "native",
+      "variant": "initial",
+      "payload": {
+        "model": "parity-model",
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a meticulous HR and financial compliance auditor. Complete the user's\nthree phases incrementally with the supplied tools; never skip ahead or claim\na phase succeeded without its tool evidence. Treat every ERROR and\nAssertionError as a lesson. Retry Phase 1 in this order when failures expose\nit: currency handling, NULL handling, semicolon handling, then robust parsing.\nFor Phase 2, exclude invalid salaries and compare city names case-insensitively.\nFor Phase 3, normalize city names and omit invalid ages. After validation,\nreturn a final answer whose first line is exactly \"Phase 3\", followed by a newline and the clean markdown table.\n"
+          },
+          {
+            "role": "user",
+            "content": "Original user goal (immutable): Parity regression goal."
+          },
+          {
+            "role": "system",
+            "content": "[FINAL ANSWER REQUIREMENTS]\nThe first line must be exactly the plain text `Phase 3`, with no other text or Markdown # marker on that line. Then write the exact verified Markdown city table using actual line breaks. After the table, write the labeled New York median salary. Do not add brackets, escaped newline text, code fences, diagnostic traces, normalization checks, tool errors, or phase-status commentary.\nFollow the final-answer presentation instructions exactly. Format is checked by the runtime; do not print validation syntax.\nWrite the Markdown table on actual separate lines, exactly as shown in the executed result. Do not wrap it in brackets, quotes, or a code fence. Do not print literal backslash-n sequences. Copy its headers, rows, and values without alteration.\nRequired final deliverable: Clean city table, derived from the executed generate_employee_phase_3_report result.\nRequired final deliverable: New York median salary:, derived from the executed calculate_new_york_median_salary result.\nProvide the final answer only after required workflow evidence is complete."
+          },
+          {
+            "role": "system",
+            "content": "[WORKFLOW STATE]\nThis is the current authoritative execution state. Historical summaries/pivots and prior results do not override it.\nActive phase: Phase 1 — identify corrupted employee records (phase_1_corruption_audit).\nPhase instruction: Use the incremental parser attempts when diagnosing corruption, then log the corruption IDs with the robust parser.\nPhase IDs are workflow labels, not function names.\nAllowed function names: audit_employee_phase_1, inspect_employee_audit_schema.\nDo not provide prose progress updates or a final answer while this phase is incomplete; make a tool call instead.\nChoose a call that supplies outstanding required evidence. Repeating already-observed outcomes does not satisfy a different argument constraint.\nOutstanding required evidence:\n- The robust parser logged the complete Phase 1 corruption IDs. Call audit_employee_phase_1; required argument constraints: {\"parser\": \"robust\"}; expected result constraints: {\"phase\": \"Phase 1\", \"status\": \"logged\"}; required output text: []. Supply any additional schema-required arguments. Expected diagnostic errors count as evidence when configured."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "inspect_employee_audit_schema",
+              "description": "Inspect the deterministic 1,000-row employees fixture and its data-quality rules.",
+              "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "audit_employee_phase_1",
+              "description": "Incrementally identify IDs with corrupt age or salary fields. Start naive; use each reported failure to select the next parser mode, ending with robust.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "parser": {
+                    "type": "string",
+                    "enum": [
+                      "naive",
+                      "currency_cleaned",
+                      "null_cleaned",
+                      "robust"
+                    ]
+                  }
+                },
+                "required": [
+                  "parser"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "calculate_new_york_median_salary",
+              "description": "Calculate Phase 2 median salary. Invalid salary strings must be excluded and New York must be case-insensitive.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "normalize_city": {
+                    "type": "boolean"
+                  },
+                  "exclude_invalid_salary": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "normalize_city",
+                  "exclude_invalid_salary"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_employee_phase_3_report",
+              "description": "Generate the clean Phase 3 markdown city matrix after normalizing city and dropping invalid ages.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "normalize_city": {
+                    "type": "boolean"
+                  },
+                  "drop_invalid_age": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "normalize_city",
+                  "drop_invalid_age"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "validate_employee_audit",
+              "description": "Validate the completed three-phase audit before final response.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "phase_1_logged": {
+                    "type": "boolean"
+                  },
+                  "median_salary": {
+                    "type": "number"
+                  },
+                  "normalize_city": {
+                    "type": "boolean"
+                  },
+                  "drop_invalid_age": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "phase_1_logged",
+                  "median_salary",
+                  "normalize_city",
+                  "drop_invalid_age"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "temperature": 0.1,
+        "max_tokens": 1024
+      }
+    },
+    {
+      "ref": "employee-audit.yaml",
+      "mode": "native",
+      "variant": "phase_2_salary_median",
+      "payload": {
+        "model": "parity-model",
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a meticulous HR and financial compliance auditor. Complete the user's\nthree phases incrementally with the supplied tools; never skip ahead or claim\na phase succeeded without its tool evidence. Treat every ERROR and\nAssertionError as a lesson. Retry Phase 1 in this order when failures expose\nit: currency handling, NULL handling, semicolon handling, then robust parsing.\nFor Phase 2, exclude invalid salaries and compare city names case-insensitively.\nFor Phase 3, normalize city names and omit invalid ages. After validation,\nreturn a final answer whose first line is exactly \"Phase 3\", followed by a newline and the clean markdown table.\n"
+          },
+          {
+            "role": "user",
+            "content": "Original user goal (immutable): Parity regression goal."
+          },
+          {
+            "role": "system",
+            "content": "[FINAL ANSWER REQUIREMENTS]\nThe first line must be exactly the plain text `Phase 3`, with no other text or Markdown # marker on that line. Then write the exact verified Markdown city table using actual line breaks. After the table, write the labeled New York median salary. Do not add brackets, escaped newline text, code fences, diagnostic traces, normalization checks, tool errors, or phase-status commentary.\nFollow the final-answer presentation instructions exactly. Format is checked by the runtime; do not print validation syntax.\nWrite the Markdown table on actual separate lines, exactly as shown in the executed result. Do not wrap it in brackets, quotes, or a code fence. Do not print literal backslash-n sequences. Copy its headers, rows, and values without alteration.\nRequired final deliverable: Clean city table, derived from the executed generate_employee_phase_3_report result.\nRequired final deliverable: New York median salary:, derived from the executed calculate_new_york_median_salary result.\nProvide the final answer only after required workflow evidence is complete."
+          },
+          {
+            "role": "system",
+            "content": "[WORKFLOW STATE]\nThis is the current authoritative execution state. Historical summaries/pivots and prior results do not override it.\nActive phase: Phase 2 — normalized New York salary median (phase_2_salary_median).\nPhase instruction: Calculate the case-insensitive median using only valid salaries; diagnostic blind-spot attempts are optional.\nPhase IDs are workflow labels, not function names.\nAllowed function names: calculate_new_york_median_salary.\nDo not provide prose progress updates or a final answer while this phase is incomplete; make a tool call instead.\nChoose a call that supplies outstanding required evidence. Repeating already-observed outcomes does not satisfy a different argument constraint.\nOutstanding required evidence:\n- The normalized New York salary median was calculated. Call calculate_new_york_median_salary; required argument constraints: {\"exclude_invalid_salary\": true, \"normalize_city\": true}; expected result constraints: {\"median_salary\": 92500.0, \"phase\": \"Phase 2\", \"status\": \"calculated\"}; required output text: []. Supply any additional schema-required arguments. Expected diagnostic errors count as evidence when configured."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "inspect_employee_audit_schema",
+              "description": "Inspect the deterministic 1,000-row employees fixture and its data-quality rules.",
+              "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "audit_employee_phase_1",
+              "description": "Incrementally identify IDs with corrupt age or salary fields. Start naive; use each reported failure to select the next parser mode, ending with robust.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "parser": {
+                    "type": "string",
+                    "enum": [
+                      "naive",
+                      "currency_cleaned",
+                      "null_cleaned",
+                      "robust"
+                    ]
+                  }
+                },
+                "required": [
+                  "parser"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "calculate_new_york_median_salary",
+              "description": "Calculate Phase 2 median salary. Invalid salary strings must be excluded and New York must be case-insensitive.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "normalize_city": {
+                    "type": "boolean"
+                  },
+                  "exclude_invalid_salary": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "normalize_city",
+                  "exclude_invalid_salary"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_employee_phase_3_report",
+              "description": "Generate the clean Phase 3 markdown city matrix after normalizing city and dropping invalid ages.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "normalize_city": {
+                    "type": "boolean"
+                  },
+                  "drop_invalid_age": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "normalize_city",
+                  "drop_invalid_age"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "validate_employee_audit",
+              "description": "Validate the completed three-phase audit before final response.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "phase_1_logged": {
+                    "type": "boolean"
+                  },
+                  "median_salary": {
+                    "type": "number"
+                  },
+                  "normalize_city": {
+                    "type": "boolean"
+                  },
+                  "drop_invalid_age": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "phase_1_logged",
+                  "median_salary",
+                  "normalize_city",
+                  "drop_invalid_age"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "temperature": 0.1,
+        "max_tokens": 1024
+      }
+    },
+    {
+      "ref": "employee-audit.yaml",
+      "mode": "native",
+      "variant": "phase_3_city_report",
+      "payload": {
+        "model": "parity-model",
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a meticulous HR and financial compliance auditor. Complete the user's\nthree phases incrementally with the supplied tools; never skip ahead or claim\na phase succeeded without its tool evidence. Treat every ERROR and\nAssertionError as a lesson. Retry Phase 1 in this order when failures expose\nit: currency handling, NULL handling, semicolon handling, then robust parsing.\nFor Phase 2, exclude invalid salaries and compare city names case-insensitively.\nFor Phase 3, normalize city names and omit invalid ages. After validation,\nreturn a final answer whose first line is exactly \"Phase 3\", followed by a newline and the clean markdown table.\n"
+          },
+          {
+            "role": "user",
+            "content": "Original user goal (immutable): Parity regression goal."
+          },
+          {
+            "role": "system",
+            "content": "[FINAL ANSWER REQUIREMENTS]\nThe first line must be exactly the plain text `Phase 3`, with no other text or Markdown # marker on that line. Then write the exact verified Markdown city table using actual line breaks. After the table, write the labeled New York median salary. Do not add brackets, escaped newline text, code fences, diagnostic traces, normalization checks, tool errors, or phase-status commentary.\nFollow the final-answer presentation instructions exactly. Format is checked by the runtime; do not print validation syntax.\nWrite the Markdown table on actual separate lines, exactly as shown in the executed result. Do not wrap it in brackets, quotes, or a code fence. Do not print literal backslash-n sequences. Copy its headers, rows, and values without alteration.\nRequired final deliverable: Clean city table, derived from the executed generate_employee_phase_3_report result.\nRequired final deliverable: New York median salary:, derived from the executed calculate_new_york_median_salary result.\nProvide the final answer only after required workflow evidence is complete."
+          },
+          {
+            "role": "system",
+            "content": "[WORKFLOW STATE]\nThis is the current authoritative execution state. Historical summaries/pivots and prior results do not override it.\nActive phase: Phase 3 — clean city report and audit validation (phase_3_city_report).\nPhase instruction: Generate the normalized markdown matrix and validate the complete audit; diagnostic failure attempts are optional.\nPhase IDs are workflow labels, not function names.\nAllowed function names: generate_employee_phase_3_report, validate_employee_audit.\nDo not provide prose progress updates or a final answer while this phase is incomplete; make a tool call instead.\nChoose a call that supplies outstanding required evidence. Repeating already-observed outcomes does not satisfy a different argument constraint.\nOutstanding required evidence:\n- The normalized Phase 3 markdown city matrix was generated. Call generate_employee_phase_3_report; required argument constraints: {\"drop_invalid_age\": true, \"normalize_city\": true}; expected result constraints: {}; required output text: [\"Phase 3\", \"| City |\"]. Supply any additional schema-required arguments. Expected diagnostic errors count as evidence when configured.\n- The final employee audit validator confirmed every phase. Call validate_employee_audit; required argument constraints: {}; expected result constraints: {\"valid\": true}; required output text: []. Supply any additional schema-required arguments. Expected diagnostic errors count as evidence when configured."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "inspect_employee_audit_schema",
+              "description": "Inspect the deterministic 1,000-row employees fixture and its data-quality rules.",
+              "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "audit_employee_phase_1",
+              "description": "Incrementally identify IDs with corrupt age or salary fields. Start naive; use each reported failure to select the next parser mode, ending with robust.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "parser": {
+                    "type": "string",
+                    "enum": [
+                      "naive",
+                      "currency_cleaned",
+                      "null_cleaned",
+                      "robust"
+                    ]
+                  }
+                },
+                "required": [
+                  "parser"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "calculate_new_york_median_salary",
+              "description": "Calculate Phase 2 median salary. Invalid salary strings must be excluded and New York must be case-insensitive.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "normalize_city": {
+                    "type": "boolean"
+                  },
+                  "exclude_invalid_salary": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "normalize_city",
+                  "exclude_invalid_salary"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_employee_phase_3_report",
+              "description": "Generate the clean Phase 3 markdown city matrix after normalizing city and dropping invalid ages.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "normalize_city": {
+                    "type": "boolean"
+                  },
+                  "drop_invalid_age": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "normalize_city",
+                  "drop_invalid_age"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "validate_employee_audit",
+              "description": "Validate the completed three-phase audit before final response.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "phase_1_logged": {
+                    "type": "boolean"
+                  },
+                  "median_salary": {
+                    "type": "number"
+                  },
+                  "normalize_city": {
+                    "type": "boolean"
+                  },
+                  "drop_invalid_age": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "phase_1_logged",
+                  "median_salary",
+                  "normalize_city",
+                  "drop_invalid_age"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "temperature": 0.1,
+        "max_tokens": 1024
+      }
+    },
+    {
+      "ref": "employee-audit.yaml",
+      "mode": "native",
+      "variant": "complete",
+      "payload": {
+        "model": "parity-model",
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a meticulous HR and financial compliance auditor. Complete the user's\nthree phases incrementally with the supplied tools; never skip ahead or claim\na phase succeeded without its tool evidence. Treat every ERROR and\nAssertionError as a lesson. Retry Phase 1 in this order when failures expose\nit: currency handling, NULL handling, semicolon handling, then robust parsing.\nFor Phase 2, exclude invalid salaries and compare city names case-insensitively.\nFor Phase 3, normalize city names and omit invalid ages. After validation,\nreturn a final answer whose first line is exactly \"Phase 3\", followed by a newline and the clean markdown table.\n"
+          },
+          {
+            "role": "user",
+            "content": "Original user goal (immutable): Parity regression goal."
+          },
+          {
+            "role": "system",
+            "content": "[FINAL ANSWER REQUIREMENTS]\nThe first line must be exactly the plain text `Phase 3`, with no other text or Markdown # marker on that line. Then write the exact verified Markdown city table using actual line breaks. After the table, write the labeled New York median salary. Do not add brackets, escaped newline text, code fences, diagnostic traces, normalization checks, tool errors, or phase-status commentary.\nFollow the final-answer presentation instructions exactly. Format is checked by the runtime; do not print validation syntax.\nWrite the Markdown table on actual separate lines, exactly as shown in the executed result. Do not wrap it in brackets, quotes, or a code fence. Do not print literal backslash-n sequences. Copy its headers, rows, and values without alteration.\nRequired final deliverable: Clean city table, derived from the executed generate_employee_phase_3_report result.\nRequired final deliverable: New York median salary:, derived from the executed calculate_new_york_median_salary result.\nProvide the final answer only after required workflow evidence is complete."
+          },
+          {
+            "role": "system",
+            "content": "[WORKFLOW STATE]\nAll configured phases have verified completion evidence. Do not call tools or functions; return the final answer now."
+          },
+          {
+            "role": "system",
+            "content": "[FINAL SYNTHESIS] All required workflow phases are complete. Return the required deliverables, not a phase-status message.\nThe first line must be exactly the plain text `Phase 3`, with no other text or Markdown # marker on that line. Then write the exact verified Markdown city table using actual line breaks. After the table, write the labeled New York median salary. Do not add brackets, escaped newline text, code fences, diagnostic traces, normalization checks, tool errors, or phase-status commentary."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "inspect_employee_audit_schema",
+              "description": "Inspect the deterministic 1,000-row employees fixture and its data-quality rules.",
+              "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "audit_employee_phase_1",
+              "description": "Incrementally identify IDs with corrupt age or salary fields. Start naive; use each reported failure to select the next parser mode, ending with robust.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "parser": {
+                    "type": "string",
+                    "enum": [
+                      "naive",
+                      "currency_cleaned",
+                      "null_cleaned",
+                      "robust"
+                    ]
+                  }
+                },
+                "required": [
+                  "parser"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "calculate_new_york_median_salary",
+              "description": "Calculate Phase 2 median salary. Invalid salary strings must be excluded and New York must be case-insensitive.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "normalize_city": {
+                    "type": "boolean"
+                  },
+                  "exclude_invalid_salary": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "normalize_city",
+                  "exclude_invalid_salary"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_employee_phase_3_report",
+              "description": "Generate the clean Phase 3 markdown city matrix after normalizing city and dropping invalid ages.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "normalize_city": {
+                    "type": "boolean"
+                  },
+                  "drop_invalid_age": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "normalize_city",
+                  "drop_invalid_age"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "validate_employee_audit",
+              "description": "Validate the completed three-phase audit before final response.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "phase_1_logged": {
+                    "type": "boolean"
+                  },
+                  "median_salary": {
+                    "type": "number"
+                  },
+                  "normalize_city": {
+                    "type": "boolean"
+                  },
+                  "drop_invalid_age": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "phase_1_logged",
+                  "median_salary",
+                  "normalize_city",
+                  "drop_invalid_age"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "temperature": 0.1,
+        "max_tokens": 1024
+      }
+    },
+    {
+      "ref": "compaction-stress.yaml",
+      "mode": "native",
+      "variant": "initial",
+      "payload": {
+        "model": "parity-model",
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are running a compaction regression over the employee fixture. Execute every diagnostic\nattempt, including expected failures, before the successful attempt in each phase.\nPhase 1: inspect the schema, then use naive, currency_cleaned, null_cleaned, and robust parsers.\nPhase 2: use (normalize_city=false, exclude_invalid_salary=false), then (false,true), then (true,true).\nPhase 3: use (normalize_city=false, drop_invalid_age=true), then (true,false), then (true,true),\nthen validate the audit. Never skip required diagnostic evidence or finish an incomplete phase.\nCarry lessons about currency, NULL, semicolon corruption, UNKNOWN salaries, and city casing.\nThe final answer's first line must be exactly Phase 3, followed by a newline, then the exact clean city table and median\nNew York salary 92500.0. Omit diagnostic traces from the final answer."
+          },
+          {
+            "role": "user",
+            "content": "Original user goal (immutable): Parity regression goal."
+          },
+          {
+            "role": "system",
+            "content": "[FINAL ANSWER REQUIREMENTS]\nThe first line must be exactly the plain text `Phase 3`, with no other text or Markdown # marker on that line. Then write the exact verified Markdown city table using actual line breaks. After the table, write the labeled New York median salary. Do not add brackets, escaped newline text, code fences, diagnostic traces, normalization checks, tool errors, or phase-status commentary.\nFollow the final-answer presentation instructions exactly. Format is checked by the runtime; do not print validation syntax.\nWrite the Markdown table on actual separate lines, exactly as shown in the executed result. Do not wrap it in brackets, quotes, or a code fence. Do not print literal backslash-n sequences. Copy its headers, rows, and values without alteration.\nRequired final deliverable: Clean city table, derived from the executed generate_employee_phase_3_report result.\nRequired final deliverable: New York median salary:, derived from the executed calculate_new_york_median_salary result.\nProvide the final answer only after required workflow evidence is complete."
+          },
+          {
+            "role": "system",
+            "content": "[WORKFLOW STATE]\nThis is the current authoritative execution state. Historical summaries/pivots and prior results do not override it.\nActive phase: Phase 1 — identify corrupted employee records (phase_1_corruption_audit).\nPhase instruction: Use the incremental parser attempts when diagnosing corruption, then log the corruption IDs with the robust parser.\nPhase IDs are workflow labels, not function names.\nAllowed function names: audit_employee_phase_1, inspect_employee_audit_schema.\nDo not provide prose progress updates or a final answer while this phase is incomplete; make a tool call instead.\nChoose a call that supplies outstanding required evidence. Repeating already-observed outcomes does not satisfy a different argument constraint.\nOutstanding required evidence:\n- The naive parser exposed the currency-formatted salary failure. Call audit_employee_phase_1; required argument constraints: {\"parser\": \"naive\"}; expected result constraints: {}; required output text: [\"$80,000\"]. Supply any additional schema-required arguments. Expected diagnostic errors count as evidence when configured.\n- The currency-cleaned parser exposed the NULL age failure. Call audit_employee_phase_1; required argument constraints: {\"parser\": \"currency_cleaned\"}; expected result constraints: {}; required output text: [\"NULL\"]. Supply any additional schema-required arguments. Expected diagnostic errors count as evidence when configured.\n- The NULL-cleaned parser exposed the semicolon-corrupted age failure. Call audit_employee_phase_1; required argument constraints: {\"parser\": \"null_cleaned\"}; expected result constraints: {}; required output text: [\"41; extra_field_corrupted\"]. Supply any additional schema-required arguments. Expected diagnostic errors count as evidence when configured.\n- The robust parser logged the complete Phase 1 corruption IDs. Call audit_employee_phase_1; required argument constraints: {\"parser\": \"robust\"}; expected result constraints: {\"phase\": \"Phase 1\", \"status\": \"logged\"}; required output text: []. Supply any additional schema-required arguments. Expected diagnostic errors count as evidence when configured."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "inspect_employee_audit_schema",
+              "description": "Inspect the deterministic 1,000-row employees fixture and its data-quality rules.",
+              "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "audit_employee_phase_1",
+              "description": "Incrementally identify IDs with corrupt age or salary fields. Start naive; use each reported failure to select the next parser mode, ending with robust.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "parser": {
+                    "type": "string",
+                    "enum": [
+                      "naive",
+                      "currency_cleaned",
+                      "null_cleaned",
+                      "robust"
+                    ]
+                  }
+                },
+                "required": [
+                  "parser"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "calculate_new_york_median_salary",
+              "description": "Calculate Phase 2 median salary. Invalid salary strings must be excluded and New York must be case-insensitive.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "normalize_city": {
+                    "type": "boolean"
+                  },
+                  "exclude_invalid_salary": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "normalize_city",
+                  "exclude_invalid_salary"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_employee_phase_3_report",
+              "description": "Generate the clean Phase 3 markdown city matrix after normalizing city and dropping invalid ages.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "normalize_city": {
+                    "type": "boolean"
+                  },
+                  "drop_invalid_age": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "normalize_city",
+                  "drop_invalid_age"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "validate_employee_audit",
+              "description": "Validate the completed three-phase audit before final response.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "phase_1_logged": {
+                    "type": "boolean"
+                  },
+                  "median_salary": {
+                    "type": "number"
+                  },
+                  "normalize_city": {
+                    "type": "boolean"
+                  },
+                  "drop_invalid_age": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "phase_1_logged",
+                  "median_salary",
+                  "normalize_city",
+                  "drop_invalid_age"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "temperature": 0.1,
+        "max_tokens": 1024
+      }
+    },
+    {
+      "ref": "compaction-stress.yaml",
+      "mode": "native",
+      "variant": "phase_2_salary_median",
+      "payload": {
+        "model": "parity-model",
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are running a compaction regression over the employee fixture. Execute every diagnostic\nattempt, including expected failures, before the successful attempt in each phase.\nPhase 1: inspect the schema, then use naive, currency_cleaned, null_cleaned, and robust parsers.\nPhase 2: use (normalize_city=false, exclude_invalid_salary=false), then (false,true), then (true,true).\nPhase 3: use (normalize_city=false, drop_invalid_age=true), then (true,false), then (true,true),\nthen validate the audit. Never skip required diagnostic evidence or finish an incomplete phase.\nCarry lessons about currency, NULL, semicolon corruption, UNKNOWN salaries, and city casing.\nThe final answer's first line must be exactly Phase 3, followed by a newline, then the exact clean city table and median\nNew York salary 92500.0. Omit diagnostic traces from the final answer."
+          },
+          {
+            "role": "user",
+            "content": "Original user goal (immutable): Parity regression goal."
+          },
+          {
+            "role": "system",
+            "content": "[FINAL ANSWER REQUIREMENTS]\nThe first line must be exactly the plain text `Phase 3`, with no other text or Markdown # marker on that line. Then write the exact verified Markdown city table using actual line breaks. After the table, write the labeled New York median salary. Do not add brackets, escaped newline text, code fences, diagnostic traces, normalization checks, tool errors, or phase-status commentary.\nFollow the final-answer presentation instructions exactly. Format is checked by the runtime; do not print validation syntax.\nWrite the Markdown table on actual separate lines, exactly as shown in the executed result. Do not wrap it in brackets, quotes, or a code fence. Do not print literal backslash-n sequences. Copy its headers, rows, and values without alteration.\nRequired final deliverable: Clean city table, derived from the executed generate_employee_phase_3_report result.\nRequired final deliverable: New York median salary:, derived from the executed calculate_new_york_median_salary result.\nProvide the final answer only after required workflow evidence is complete."
+          },
+          {
+            "role": "system",
+            "content": "[WORKFLOW STATE]\nThis is the current authoritative execution state. Historical summaries/pivots and prior results do not override it.\nActive phase: Phase 2 — normalized New York salary median (phase_2_salary_median).\nPhase instruction: Execute both required diagnostic attempts first: (normalize_city=false, exclude_invalid_salary=false), then (false,true). Then calculate the normalized median using (true,true). All three outcomes are required.\nPhase IDs are workflow labels, not function names.\nAllowed function names: calculate_new_york_median_salary.\nDo not provide prose progress updates or a final answer while this phase is incomplete; make a tool call instead.\nChoose a call that supplies outstanding required evidence. Repeating already-observed outcomes does not satisfy a different argument constraint.\nOutstanding required evidence:\n- The unfiltered salary metric failed because UNKNOWN values remained. Call calculate_new_york_median_salary; required argument constraints: {\"exclude_invalid_salary\": false, \"normalize_city\": false}; expected result constraints: {}; required output text: [\"UNKNOWN\"]. Supply any additional schema-required arguments. Expected diagnostic errors count as evidence when configured.\n- The case-sensitive city metric failed with the known incorrect median. Call calculate_new_york_median_salary; required argument constraints: {\"exclude_invalid_salary\": true, \"normalize_city\": false}; expected result constraints: {}; required output text: [\"Expected median 92500\"]. Supply any additional schema-required arguments. Expected diagnostic errors count as evidence when configured.\n- The normalized New York salary median was calculated. Call calculate_new_york_median_salary; required argument constraints: {\"exclude_invalid_salary\": true, \"normalize_city\": true}; expected result constraints: {\"median_salary\": 92500.0, \"phase\": \"Phase 2\", \"status\": \"calculated\"}; required output text: []. Supply any additional schema-required arguments. Expected diagnostic errors count as evidence when configured."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "inspect_employee_audit_schema",
+              "description": "Inspect the deterministic 1,000-row employees fixture and its data-quality rules.",
+              "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "audit_employee_phase_1",
+              "description": "Incrementally identify IDs with corrupt age or salary fields. Start naive; use each reported failure to select the next parser mode, ending with robust.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "parser": {
+                    "type": "string",
+                    "enum": [
+                      "naive",
+                      "currency_cleaned",
+                      "null_cleaned",
+                      "robust"
+                    ]
+                  }
+                },
+                "required": [
+                  "parser"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "calculate_new_york_median_salary",
+              "description": "Calculate Phase 2 median salary. Invalid salary strings must be excluded and New York must be case-insensitive.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "normalize_city": {
+                    "type": "boolean"
+                  },
+                  "exclude_invalid_salary": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "normalize_city",
+                  "exclude_invalid_salary"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_employee_phase_3_report",
+              "description": "Generate the clean Phase 3 markdown city matrix after normalizing city and dropping invalid ages.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "normalize_city": {
+                    "type": "boolean"
+                  },
+                  "drop_invalid_age": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "normalize_city",
+                  "drop_invalid_age"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "validate_employee_audit",
+              "description": "Validate the completed three-phase audit before final response.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "phase_1_logged": {
+                    "type": "boolean"
+                  },
+                  "median_salary": {
+                    "type": "number"
+                  },
+                  "normalize_city": {
+                    "type": "boolean"
+                  },
+                  "drop_invalid_age": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "phase_1_logged",
+                  "median_salary",
+                  "normalize_city",
+                  "drop_invalid_age"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "temperature": 0.1,
+        "max_tokens": 1024
+      }
+    },
+    {
+      "ref": "compaction-stress.yaml",
+      "mode": "native",
+      "variant": "phase_3_city_report",
+      "payload": {
+        "model": "parity-model",
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are running a compaction regression over the employee fixture. Execute every diagnostic\nattempt, including expected failures, before the successful attempt in each phase.\nPhase 1: inspect the schema, then use naive, currency_cleaned, null_cleaned, and robust parsers.\nPhase 2: use (normalize_city=false, exclude_invalid_salary=false), then (false,true), then (true,true).\nPhase 3: use (normalize_city=false, drop_invalid_age=true), then (true,false), then (true,true),\nthen validate the audit. Never skip required diagnostic evidence or finish an incomplete phase.\nCarry lessons about currency, NULL, semicolon corruption, UNKNOWN salaries, and city casing.\nThe final answer's first line must be exactly Phase 3, followed by a newline, then the exact clean city table and median\nNew York salary 92500.0. Omit diagnostic traces from the final answer."
+          },
+          {
+            "role": "user",
+            "content": "Original user goal (immutable): Parity regression goal."
+          },
+          {
+            "role": "system",
+            "content": "[FINAL ANSWER REQUIREMENTS]\nThe first line must be exactly the plain text `Phase 3`, with no other text or Markdown # marker on that line. Then write the exact verified Markdown city table using actual line breaks. After the table, write the labeled New York median salary. Do not add brackets, escaped newline text, code fences, diagnostic traces, normalization checks, tool errors, or phase-status commentary.\nFollow the final-answer presentation instructions exactly. Format is checked by the runtime; do not print validation syntax.\nWrite the Markdown table on actual separate lines, exactly as shown in the executed result. Do not wrap it in brackets, quotes, or a code fence. Do not print literal backslash-n sequences. Copy its headers, rows, and values without alteration.\nRequired final deliverable: Clean city table, derived from the executed generate_employee_phase_3_report result.\nRequired final deliverable: New York median salary:, derived from the executed calculate_new_york_median_salary result.\nProvide the final answer only after required workflow evidence is complete."
+          },
+          {
+            "role": "system",
+            "content": "[WORKFLOW STATE]\nThis is the current authoritative execution state. Historical summaries/pivots and prior results do not override it.\nActive phase: Phase 3 — clean city report and audit validation (phase_3_city_report).\nPhase instruction: Execute both required report diagnostics first: (normalize_city=false, drop_invalid_age=true), then (true,false). Then generate the clean report using (true,true) and validate the complete audit. All outcomes are required.\nPhase IDs are workflow labels, not function names.\nAllowed function names: generate_employee_phase_3_report, validate_employee_audit.\nDo not provide prose progress updates or a final answer while this phase is incomplete; make a tool call instead.\nChoose a call that supplies outstanding required evidence. Repeating already-observed outcomes does not satisfy a different argument constraint.\nOutstanding required evidence:\n- The report exposed the unnormalized-city failure. Call generate_employee_phase_3_report; required argument constraints: {\"drop_invalid_age\": true, \"normalize_city\": false}; expected result constraints: {}; required output text: [\"split New York\"]. Supply any additional schema-required arguments. Expected diagnostic errors count as evidence when configured.\n- The report exposed the invalid-age averaging failure. Call generate_employee_phase_3_report; required argument constraints: {\"drop_invalid_age\": false, \"normalize_city\": true}; expected result constraints: {}; required output text: [\"cannot average age\"]. Supply any additional schema-required arguments. Expected diagnostic errors count as evidence when configured.\n- The normalized Phase 3 markdown city matrix was generated. Call generate_employee_phase_3_report; required argument constraints: {\"drop_invalid_age\": true, \"normalize_city\": true}; expected result constraints: {}; required output text: [\"Phase 3\", \"| City |\"]. Supply any additional schema-required arguments. Expected diagnostic errors count as evidence when configured.\n- The final employee audit validator confirmed every phase. Call validate_employee_audit; required argument constraints: {\"drop_invalid_age\": true, \"median_salary\": 92500.0, \"normalize_city\": true, \"phase_1_logged\": true}; expected result constraints: {\"valid\": true}; required output text: []. Supply any additional schema-required arguments. Expected diagnostic errors count as evidence when configured."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "inspect_employee_audit_schema",
+              "description": "Inspect the deterministic 1,000-row employees fixture and its data-quality rules.",
+              "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "audit_employee_phase_1",
+              "description": "Incrementally identify IDs with corrupt age or salary fields. Start naive; use each reported failure to select the next parser mode, ending with robust.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "parser": {
+                    "type": "string",
+                    "enum": [
+                      "naive",
+                      "currency_cleaned",
+                      "null_cleaned",
+                      "robust"
+                    ]
+                  }
+                },
+                "required": [
+                  "parser"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "calculate_new_york_median_salary",
+              "description": "Calculate Phase 2 median salary. Invalid salary strings must be excluded and New York must be case-insensitive.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "normalize_city": {
+                    "type": "boolean"
+                  },
+                  "exclude_invalid_salary": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "normalize_city",
+                  "exclude_invalid_salary"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_employee_phase_3_report",
+              "description": "Generate the clean Phase 3 markdown city matrix after normalizing city and dropping invalid ages.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "normalize_city": {
+                    "type": "boolean"
+                  },
+                  "drop_invalid_age": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "normalize_city",
+                  "drop_invalid_age"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "validate_employee_audit",
+              "description": "Validate the completed three-phase audit before final response.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "phase_1_logged": {
+                    "type": "boolean"
+                  },
+                  "median_salary": {
+                    "type": "number"
+                  },
+                  "normalize_city": {
+                    "type": "boolean"
+                  },
+                  "drop_invalid_age": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "phase_1_logged",
+                  "median_salary",
+                  "normalize_city",
+                  "drop_invalid_age"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "temperature": 0.1,
+        "max_tokens": 1024
+      }
+    },
+    {
+      "ref": "compaction-stress.yaml",
+      "mode": "native",
+      "variant": "complete",
+      "payload": {
+        "model": "parity-model",
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are running a compaction regression over the employee fixture. Execute every diagnostic\nattempt, including expected failures, before the successful attempt in each phase.\nPhase 1: inspect the schema, then use naive, currency_cleaned, null_cleaned, and robust parsers.\nPhase 2: use (normalize_city=false, exclude_invalid_salary=false), then (false,true), then (true,true).\nPhase 3: use (normalize_city=false, drop_invalid_age=true), then (true,false), then (true,true),\nthen validate the audit. Never skip required diagnostic evidence or finish an incomplete phase.\nCarry lessons about currency, NULL, semicolon corruption, UNKNOWN salaries, and city casing.\nThe final answer's first line must be exactly Phase 3, followed by a newline, then the exact clean city table and median\nNew York salary 92500.0. Omit diagnostic traces from the final answer."
+          },
+          {
+            "role": "user",
+            "content": "Original user goal (immutable): Parity regression goal."
+          },
+          {
+            "role": "system",
+            "content": "[FINAL ANSWER REQUIREMENTS]\nThe first line must be exactly the plain text `Phase 3`, with no other text or Markdown # marker on that line. Then write the exact verified Markdown city table using actual line breaks. After the table, write the labeled New York median salary. Do not add brackets, escaped newline text, code fences, diagnostic traces, normalization checks, tool errors, or phase-status commentary.\nFollow the final-answer presentation instructions exactly. Format is checked by the runtime; do not print validation syntax.\nWrite the Markdown table on actual separate lines, exactly as shown in the executed result. Do not wrap it in brackets, quotes, or a code fence. Do not print literal backslash-n sequences. Copy its headers, rows, and values without alteration.\nRequired final deliverable: Clean city table, derived from the executed generate_employee_phase_3_report result.\nRequired final deliverable: New York median salary:, derived from the executed calculate_new_york_median_salary result.\nProvide the final answer only after required workflow evidence is complete."
+          },
+          {
+            "role": "system",
+            "content": "[WORKFLOW STATE]\nAll configured phases have verified completion evidence. Do not call tools or functions; return the final answer now."
+          },
+          {
+            "role": "system",
+            "content": "[FINAL SYNTHESIS] All required workflow phases are complete. Return the required deliverables, not a phase-status message.\nThe first line must be exactly the plain text `Phase 3`, with no other text or Markdown # marker on that line. Then write the exact verified Markdown city table using actual line breaks. After the table, write the labeled New York median salary. Do not add brackets, escaped newline text, code fences, diagnostic traces, normalization checks, tool errors, or phase-status commentary."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "inspect_employee_audit_schema",
+              "description": "Inspect the deterministic 1,000-row employees fixture and its data-quality rules.",
+              "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "audit_employee_phase_1",
+              "description": "Incrementally identify IDs with corrupt age or salary fields. Start naive; use each reported failure to select the next parser mode, ending with robust.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "parser": {
+                    "type": "string",
+                    "enum": [
+                      "naive",
+                      "currency_cleaned",
+                      "null_cleaned",
+                      "robust"
+                    ]
+                  }
+                },
+                "required": [
+                  "parser"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "calculate_new_york_median_salary",
+              "description": "Calculate Phase 2 median salary. Invalid salary strings must be excluded and New York must be case-insensitive.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "normalize_city": {
+                    "type": "boolean"
+                  },
+                  "exclude_invalid_salary": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "normalize_city",
+                  "exclude_invalid_salary"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_employee_phase_3_report",
+              "description": "Generate the clean Phase 3 markdown city matrix after normalizing city and dropping invalid ages.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "normalize_city": {
+                    "type": "boolean"
+                  },
+                  "drop_invalid_age": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "normalize_city",
+                  "drop_invalid_age"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "validate_employee_audit",
+              "description": "Validate the completed three-phase audit before final response.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "phase_1_logged": {
+                    "type": "boolean"
+                  },
+                  "median_salary": {
+                    "type": "number"
+                  },
+                  "normalize_city": {
+                    "type": "boolean"
+                  },
+                  "drop_invalid_age": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "phase_1_logged",
+                  "median_salary",
+                  "normalize_city",
+                  "drop_invalid_age"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "temperature": 0.1,
+        "max_tokens": 1024
+      }
+    },
+    {
+      "ref": "completion-no-workflow.yaml",
+      "mode": "native",
+      "variant": "initial",
+      "payload": {
+        "model": "parity-model",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Follow the user request and preserve exact requested response strings.\nFor a direct response request, answer directly without calling tools.\nFor a log-analysis request, inspect and analyze the log with robust parsing, validate the\ntop IP and count, then report the validated result. There is intentionally no workflow gate.\nNever present a tool or model error as a successful task result."
+          },
+          {
+            "role": "user",
+            "content": "Original user goal (immutable): Parity regression goal."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "inspect_log",
+              "description": "Return a bounded excerpt of the simulated HTTP access log. Use this before forming a parsing strategy.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "start_line": {
+                    "type": "integer",
+                    "description": "First 1-based line to return",
+                    "minimum": 1
+                  },
+                  "line_count": {
+                    "type": "integer",
+                    "description": "Number of lines to return",
+                    "minimum": 1,
+                    "maximum": 100
+                  }
+                },
+                "required": [
+                  "start_line",
+                  "line_count"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "analyze_500_ips",
+              "description": "Analyze the simulated log for status-500 IPs. Set robust_parser true to ignore malformed records safely.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "robust_parser": {
+                    "type": "boolean",
+                    "description": "Validate each line before accessing fields"
+                  }
+                },
+                "required": [
+                  "robust_parser"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "validate_top_offending_ip",
+              "description": "Validate a proposed top status-500 IP and its occurrence count against the hidden expected result.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "ip": {
+                    "type": "string",
+                    "description": "Proposed IPv4 address"
+                  },
+                  "count": {
+                    "type": "integer",
+                    "description": "Proposed number of 500 responses"
+                  }
+                },
+                "required": [
+                  "ip",
+                  "count"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "temperature": 0.1,
+        "max_tokens": 1024
+      }
+    },
+    {
+      "ref": "tool-recovery.yaml",
+      "mode": "native",
+      "variant": "initial",
+      "payload": {
+        "model": "parity-model",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Run a read-only tool-error and resume regression. In diagnose_failure, call\nanalyze_500_ips with robust_parser=false to capture the expected naive parser error.\nIn robust_retry, call analyze_500_ips with robust_parser=true. In validate_result, validate\nthe computed top IP and count. Follow the active phase and do not issue a final answer\nbefore all required evidence exists. Finally return exactly RECOVERY_OK 10.0.0.5 83.\nThese tools only read fixture data; this profile does not provide crash-safe side-effect retries."
+          },
+          {
+            "role": "user",
+            "content": "Original user goal (immutable): Parity regression goal."
+          },
+          {
+            "role": "system",
+            "content": "[FINAL ANSWER REQUIREMENTS]\nThe final answer must be exactly the literal text between BEGIN_LITERAL and END_LITERAL below. Return only that text. Do not output the markers, quotes, a JSON wrapper, or an explanation.\nBEGIN_LITERAL\nRECOVERY_OK 10.0.0.5 83\nEND_LITERAL\nProvide the final answer only after required workflow evidence is complete."
+          },
+          {
+            "role": "system",
+            "content": "[WORKFLOW STATE]\nThis is the current authoritative execution state. Historical summaries/pivots and prior results do not override it.\nActive phase: Capture naive parser failure (diagnose_failure).\nPhase instruction: Call analyze_500_ips with robust_parser=false. The expected ERROR is required evidence.\nPhase IDs are workflow labels, not function names.\nAllowed function names: analyze_500_ips.\nDo not provide prose progress updates or a final answer while this phase is incomplete; make a tool call instead.\nChoose a call that supplies outstanding required evidence. Repeating already-observed outcomes does not satisfy a different argument constraint.\nOutstanding required evidence:\n- The naive parser error was captured. Call analyze_500_ips; required argument constraints: {\"robust_parser\": false}; expected result constraints: {}; required output text: [\"ERROR: naive parser failed\"]. Supply any additional schema-required arguments. Expected diagnostic errors count as evidence when configured."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "analyze_500_ips",
+              "description": "Analyze the simulated log for status-500 IPs. Set robust_parser true to ignore malformed records safely.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "robust_parser": {
+                    "type": "boolean",
+                    "description": "Validate each line before accessing fields"
+                  }
+                },
+                "required": [
+                  "robust_parser"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "validate_top_offending_ip",
+              "description": "Validate a proposed top status-500 IP and its occurrence count against the hidden expected result.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "ip": {
+                    "type": "string",
+                    "description": "Proposed IPv4 address"
+                  },
+                  "count": {
+                    "type": "integer",
+                    "description": "Proposed number of 500 responses"
+                  }
+                },
+                "required": [
+                  "ip",
+                  "count"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "temperature": 0.1,
+        "max_tokens": 1024
+      }
+    },
+    {
+      "ref": "tool-recovery.yaml",
+      "mode": "native",
+      "variant": "robust_retry",
+      "payload": {
+        "model": "parity-model",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Run a read-only tool-error and resume regression. In diagnose_failure, call\nanalyze_500_ips with robust_parser=false to capture the expected naive parser error.\nIn robust_retry, call analyze_500_ips with robust_parser=true. In validate_result, validate\nthe computed top IP and count. Follow the active phase and do not issue a final answer\nbefore all required evidence exists. Finally return exactly RECOVERY_OK 10.0.0.5 83.\nThese tools only read fixture data; this profile does not provide crash-safe side-effect retries."
+          },
+          {
+            "role": "user",
+            "content": "Original user goal (immutable): Parity regression goal."
+          },
+          {
+            "role": "system",
+            "content": "[FINAL ANSWER REQUIREMENTS]\nThe final answer must be exactly the literal text between BEGIN_LITERAL and END_LITERAL below. Return only that text. Do not output the markers, quotes, a JSON wrapper, or an explanation.\nBEGIN_LITERAL\nRECOVERY_OK 10.0.0.5 83\nEND_LITERAL\nProvide the final answer only after required workflow evidence is complete."
+          },
+          {
+            "role": "system",
+            "content": "[WORKFLOW STATE]\nThis is the current authoritative execution state. Historical summaries/pivots and prior results do not override it.\nActive phase: Retry with robust parsing (robust_retry).\nPhase instruction: Call analyze_500_ips with robust_parser=true and retain the computed top result.\nPhase IDs are workflow labels, not function names.\nAllowed function names: analyze_500_ips.\nDo not provide prose progress updates or a final answer while this phase is incomplete; make a tool call instead.\nChoose a call that supplies outstanding required evidence. Repeating already-observed outcomes does not satisfy a different argument constraint.\nOutstanding required evidence:\n- Robust parsing computed the expected top result. Call analyze_500_ips; required argument constraints: {\"robust_parser\": true}; expected result constraints: {\"top\": [[\"10.0.0.5\", 83]]}; required output text: []. Supply any additional schema-required arguments. Expected diagnostic errors count as evidence when configured."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "analyze_500_ips",
+              "description": "Analyze the simulated log for status-500 IPs. Set robust_parser true to ignore malformed records safely.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "robust_parser": {
+                    "type": "boolean",
+                    "description": "Validate each line before accessing fields"
+                  }
+                },
+                "required": [
+                  "robust_parser"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "validate_top_offending_ip",
+              "description": "Validate a proposed top status-500 IP and its occurrence count against the hidden expected result.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "ip": {
+                    "type": "string",
+                    "description": "Proposed IPv4 address"
+                  },
+                  "count": {
+                    "type": "integer",
+                    "description": "Proposed number of 500 responses"
+                  }
+                },
+                "required": [
+                  "ip",
+                  "count"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "temperature": 0.1,
+        "max_tokens": 1024
+      }
+    },
+    {
+      "ref": "tool-recovery.yaml",
+      "mode": "native",
+      "variant": "validate_result",
+      "payload": {
+        "model": "parity-model",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Run a read-only tool-error and resume regression. In diagnose_failure, call\nanalyze_500_ips with robust_parser=false to capture the expected naive parser error.\nIn robust_retry, call analyze_500_ips with robust_parser=true. In validate_result, validate\nthe computed top IP and count. Follow the active phase and do not issue a final answer\nbefore all required evidence exists. Finally return exactly RECOVERY_OK 10.0.0.5 83.\nThese tools only read fixture data; this profile does not provide crash-safe side-effect retries."
+          },
+          {
+            "role": "user",
+            "content": "Original user goal (immutable): Parity regression goal."
+          },
+          {
+            "role": "system",
+            "content": "[FINAL ANSWER REQUIREMENTS]\nThe final answer must be exactly the literal text between BEGIN_LITERAL and END_LITERAL below. Return only that text. Do not output the markers, quotes, a JSON wrapper, or an explanation.\nBEGIN_LITERAL\nRECOVERY_OK 10.0.0.5 83\nEND_LITERAL\nProvide the final answer only after required workflow evidence is complete."
+          },
+          {
+            "role": "system",
+            "content": "[WORKFLOW STATE]\nThis is the current authoritative execution state. Historical summaries/pivots and prior results do not override it.\nActive phase: Validate recovered result (validate_result).\nPhase instruction: Validate top IP 10.0.0.5 and count 83 with validate_top_offending_ip.\nPhase IDs are workflow labels, not function names.\nAllowed function names: validate_top_offending_ip.\nDo not provide prose progress updates or a final answer while this phase is incomplete; make a tool call instead.\nChoose a call that supplies outstanding required evidence. Repeating already-observed outcomes does not satisfy a different argument constraint.\nOutstanding required evidence:\n- The corrected result was validated. Call validate_top_offending_ip; required argument constraints: {\"count\": 83, \"ip\": \"10.0.0.5\"}; expected result constraints: {\"valid\": true}; required output text: []. Supply any additional schema-required arguments. Expected diagnostic errors count as evidence when configured."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "analyze_500_ips",
+              "description": "Analyze the simulated log for status-500 IPs. Set robust_parser true to ignore malformed records safely.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "robust_parser": {
+                    "type": "boolean",
+                    "description": "Validate each line before accessing fields"
+                  }
+                },
+                "required": [
+                  "robust_parser"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "validate_top_offending_ip",
+              "description": "Validate a proposed top status-500 IP and its occurrence count against the hidden expected result.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "ip": {
+                    "type": "string",
+                    "description": "Proposed IPv4 address"
+                  },
+                  "count": {
+                    "type": "integer",
+                    "description": "Proposed number of 500 responses"
+                  }
+                },
+                "required": [
+                  "ip",
+                  "count"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "temperature": 0.1,
+        "max_tokens": 1024
+      }
+    },
+    {
+      "ref": "tool-recovery.yaml",
+      "mode": "native",
+      "variant": "complete",
+      "payload": {
+        "model": "parity-model",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Run a read-only tool-error and resume regression. In diagnose_failure, call\nanalyze_500_ips with robust_parser=false to capture the expected naive parser error.\nIn robust_retry, call analyze_500_ips with robust_parser=true. In validate_result, validate\nthe computed top IP and count. Follow the active phase and do not issue a final answer\nbefore all required evidence exists. Finally return exactly RECOVERY_OK 10.0.0.5 83.\nThese tools only read fixture data; this profile does not provide crash-safe side-effect retries."
+          },
+          {
+            "role": "user",
+            "content": "Original user goal (immutable): Parity regression goal."
+          },
+          {
+            "role": "system",
+            "content": "[FINAL ANSWER REQUIREMENTS]\nThe final answer must be exactly the literal text between BEGIN_LITERAL and END_LITERAL below. Return only that text. Do not output the markers, quotes, a JSON wrapper, or an explanation.\nBEGIN_LITERAL\nRECOVERY_OK 10.0.0.5 83\nEND_LITERAL\nProvide the final answer only after required workflow evidence is complete."
+          },
+          {
+            "role": "system",
+            "content": "[WORKFLOW STATE]\nAll configured phases have verified completion evidence. Do not call tools or functions; return the final answer now."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "analyze_500_ips",
+              "description": "Analyze the simulated log for status-500 IPs. Set robust_parser true to ignore malformed records safely.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "robust_parser": {
+                    "type": "boolean",
+                    "description": "Validate each line before accessing fields"
+                  }
+                },
+                "required": [
+                  "robust_parser"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "validate_top_offending_ip",
+              "description": "Validate a proposed top status-500 IP and its occurrence count against the hidden expected result.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "ip": {
+                    "type": "string",
+                    "description": "Proposed IPv4 address"
+                  },
+                  "count": {
+                    "type": "integer",
+                    "description": "Proposed number of 500 responses"
+                  }
+                },
+                "required": [
+                  "ip",
+                  "count"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "temperature": 0.1,
+        "max_tokens": 1024
+      }
+    },
+    {
+      "ref": "log-analysis.yaml",
+      "mode": "native",
+      "variant": "after_inspection",
+      "payload": {
+        "model": "parity-model",
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a helpful data analyst agent. Solve the user's task using the available\ntools. Work incrementally, inspect data before making assumptions, and use the\nvalidator tools to check conclusions. Treat tool errors as evidence. Return a\nconcise final answer only when validation succeeds.\n"
+          },
+          {
+            "role": "user",
+            "content": "Original user goal (immutable): Parity regression goal."
+          },
+          {
+            "role": "system",
+            "content": "[RAW WORKING BUFFER — PRESERVE VERBATIM]"
+          },
+          {
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "id": "inspection",
+                "type": "function",
+                "function": {
+                  "name": "inspect_log",
+                  "arguments": "{\"start_line\":1,\"line_count\":10}"
+                }
+              }
+            ]
+          },
+          {
+            "role": "tool",
+            "content": "First log excerpt.",
+            "name": "inspect_log",
+            "tool_call_id": "inspection"
+          },
+          {
+            "role": "system",
+            "content": "[WORKFLOW STATE]\nThis is the current authoritative execution state. Historical summaries/pivots and prior results do not override it.\nActive phase: Identify HTTP 500 IPs (identify_500_ips).\nPhase instruction: Inspect and safely parse the log, then validate the proposed top IP and count.\nPhase IDs are workflow labels, not function names.\nAllowed function names: analyze_500_ips, inspect_log, validate_top_offending_ip.\nDo not provide prose progress updates or a final answer while this phase is incomplete; make a tool call instead.\nChoose a call that supplies outstanding required evidence. Repeating already-observed outcomes does not satisfy a different argument constraint.\nOutstanding required evidence:\n- The top-offending-IP validator has confirmed the result. Call validate_top_offending_ip; required argument constraints: {}; expected result constraints: {\"valid\": true}; required output text: []. Supply any additional schema-required arguments. Expected diagnostic errors count as evidence when configured."
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "inspect_log",
+              "description": "Return a bounded excerpt of the simulated HTTP access log. Use this before forming a parsing strategy.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "start_line": {
+                    "type": "integer",
+                    "description": "First 1-based line to return",
+                    "minimum": 1
+                  },
+                  "line_count": {
+                    "type": "integer",
+                    "description": "Number of lines to return",
+                    "minimum": 1,
+                    "maximum": 100
+                  }
+                },
+                "required": [
+                  "start_line",
+                  "line_count"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "analyze_500_ips",
+              "description": "Analyze the simulated log for status-500 IPs. Set robust_parser true to ignore malformed records safely.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "robust_parser": {
+                    "type": "boolean",
+                    "description": "Validate each line before accessing fields"
+                  }
+                },
+                "required": [
+                  "robust_parser"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "validate_top_offending_ip",
+              "description": "Validate a proposed top status-500 IP and its occurrence count against the hidden expected result.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "ip": {
+                    "type": "string",
+                    "description": "Proposed IPv4 address"
+                  },
+                  "count": {
+                    "type": "integer",
+                    "description": "Proposed number of 500 responses"
+                  }
+                },
+                "required": [
+                  "ip",
+                  "count"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "temperature": 0.1,
+        "max_tokens": 1024
+      }
+    },
+    {
+      "ref": "employee-audit.yaml",
+      "mode": "native",
+      "variant": "complete_artifacts",
+      "payload": {
+        "model": "parity-model",
+        "messages": [
+          {
+            "role": "system",
+            "content": "You are a meticulous HR and financial compliance auditor. Complete the user's\nthree phases incrementally with the supplied tools; never skip ahead or claim\na phase succeeded without its tool evidence. Treat every ERROR and\nAssertionError as a lesson. Retry Phase 1 in this order when failures expose\nit: currency handling, NULL handling, semicolon handling, then robust parsing.\nFor Phase 2, exclude invalid salaries and compare city names case-insensitively.\nFor Phase 3, normalize city names and omit invalid ages. After validation,\nreturn a final answer whose first line is exactly \"Phase 3\", followed by a newline and the clean markdown table.\n"
+          },
+          {
+            "role": "user",
+            "content": "Original user goal (immutable): Parity regression goal."
+          },
+          {
+            "role": "system",
+            "content": "[FINAL ANSWER REQUIREMENTS]\nThe first line must be exactly the plain text `Phase 3`, with no other text or Markdown # marker on that line. Then write the exact verified Markdown city table using actual line breaks. After the table, write the labeled New York median salary. Do not add brackets, escaped newline text, code fences, diagnostic traces, normalization checks, tool errors, or phase-status commentary.\nFollow the final-answer presentation instructions exactly. Format is checked by the runtime; do not print validation syntax.\nWrite the Markdown table on actual separate lines, exactly as shown in the executed result. Do not wrap it in brackets, quotes, or a code fence. Do not print literal backslash-n sequences. Copy its headers, rows, and values without alteration.\nRequired final deliverable: Clean city table, derived from the executed generate_employee_phase_3_report result.\nRequired final deliverable: New York median salary:, derived from the executed calculate_new_york_median_salary result.\nProvide the final answer only after required workflow evidence is complete."
+          },
+          {
+            "role": "system",
+            "content": "[EXECUTED TOOL RESULT — REQUIRED FINAL DELIVERABLE]\n| City | Valid headcount | Average age |\n| --- | --- | --- |\n| Austin | 199 | 42.62 |"
+          },
+          {
+            "role": "system",
+            "content": "[EXECUTED TOOL RESULT — REQUIRED FINAL DELIVERABLE]\nNew York median salary: 92500.0"
+          },
+          {
+            "role": "system",
+            "content": "[RESULT ARGUMENT BINDING] validate_employee_audit.median_salary = 92500.0; use this executed value without guessing."
+          },
+          {
+            "role": "system",
+            "content": "[WORKFLOW STATE]\nAll configured phases have verified completion evidence. Do not call tools or functions; return the final answer now."
+          },
+          {
+            "role": "system",
+            "content": "[FINAL SYNTHESIS] All required workflow phases are complete. Return the required deliverables, not a phase-status message.\nThe first line must be exactly the plain text `Phase 3`, with no other text or Markdown # marker on that line. Then write the exact verified Markdown city table using actual line breaks. After the table, write the labeled New York median salary. Do not add brackets, escaped newline text, code fences, diagnostic traces, normalization checks, tool errors, or phase-status commentary.\n| City | Valid headcount | Average age |\n| --- | --- | --- |\n| Austin | 199 | 42.62 |\nNew York median salary: 92500.0"
+          }
+        ],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "inspect_employee_audit_schema",
+              "description": "Inspect the deterministic 1,000-row employees fixture and its data-quality rules.",
+              "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "audit_employee_phase_1",
+              "description": "Incrementally identify IDs with corrupt age or salary fields. Start naive; use each reported failure to select the next parser mode, ending with robust.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "parser": {
+                    "type": "string",
+                    "enum": [
+                      "naive",
+                      "currency_cleaned",
+                      "null_cleaned",
+                      "robust"
+                    ]
+                  }
+                },
+                "required": [
+                  "parser"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "calculate_new_york_median_salary",
+              "description": "Calculate Phase 2 median salary. Invalid salary strings must be excluded and New York must be case-insensitive.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "normalize_city": {
+                    "type": "boolean"
+                  },
+                  "exclude_invalid_salary": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "normalize_city",
+                  "exclude_invalid_salary"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "generate_employee_phase_3_report",
+              "description": "Generate the clean Phase 3 markdown city matrix after normalizing city and dropping invalid ages.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "normalize_city": {
+                    "type": "boolean"
+                  },
+                  "drop_invalid_age": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "normalize_city",
+                  "drop_invalid_age"
+                ]
+              }
+            }
+          },
+          {
+            "type": "function",
+            "function": {
+              "name": "validate_employee_audit",
+              "description": "Validate the completed three-phase audit before final response.",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "phase_1_logged": {
+                    "type": "boolean"
+                  },
+                  "median_salary": {
+                    "type": "number"
+                  },
+                  "normalize_city": {
+                    "type": "boolean"
+                  },
+                  "drop_invalid_age": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "phase_1_logged",
+                  "median_salary",
+                  "normalize_city",
+                  "drop_invalid_age"
+                ]
+              }
+            }
+          }
+        ],
+        "tool_choice": "auto",
+        "temperature": 0.1,
+        "max_tokens": 1024
+      }
+    }
+  ],
+  "argument_feedback": {
+    "inspect_log": "Argument schema: {\"properties\": {\"line_count\": {\"description\": \"Number of lines to return\", \"maximum\": 100, \"minimum\": 1, \"type\": \"integer\"}, \"start_line\": {\"description\": \"First 1-based line to return\", \"minimum\": 1, \"type\": \"integer\"}}, \"required\": [\"start_line\", \"line_count\"], \"type\": \"object\"}\nArgument-shape example (replace placeholder values with evidence): {\"line_count\": 1, \"start_line\": 1}. JSON booleans are true/false without quotes. ",
+    "analyze_500_ips": "Argument schema: {\"properties\": {\"robust_parser\": {\"description\": \"Validate each line before accessing fields\", \"type\": \"boolean\"}}, \"required\": [\"robust_parser\"], \"type\": \"object\"}\nArgument-shape example (replace placeholder values with evidence): {\"robust_parser\": true}. JSON booleans are true/false without quotes. ",
+    "validate_top_offending_ip": "Argument schema: {\"properties\": {\"count\": {\"description\": \"Proposed number of 500 responses\", \"type\": \"integer\"}, \"ip\": {\"description\": \"Proposed IPv4 address\", \"type\": \"string\"}}, \"required\": [\"ip\", \"count\"], \"type\": \"object\"}\nArgument-shape example (replace placeholder values with evidence): {\"count\": 1, \"ip\": \"value\"}. JSON booleans are true/false without quotes. Next required evidence: The top-offending-IP validator has confirmed the result.. "
+  },
+  "summaries": [
+    {
+      "hybrid": true,
+      "payload": {
+        "model": "parity-model",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Summarize only the supplied historical prefix and previous ledger. Copy the original goal exactly. Do not reconstruct recent raw messages. Carry forward prior useful lessons and dead ends. Keep provisional hypotheses separate from observations; do not present guesses as verified facts. Use only numbers appearing in the source. Do not calculate or invent statistics. Fill every section, using '- None.' if empty. No prose outside the structure. Escape XML special characters when using the XML format. Keep output short, within 4096 UTF-8 bytes. Return one XML document with root COMPACTED_STATE and exactly four text-only child elements, in this order: USER_GOAL, GLOBAL_LESSON_LEDGER, DEAD_ENDS, CURRENT_LOCAL_PIVOT. Use this complete first child verbatim: <USER_GOAL>Parity regression goal.</USER_GOAL>. Write concise source-grounded lessons in GLOBAL_LESSON_LEDGER, failed approaches in DEAD_ENDS, and a provisional next direction in CURRENT_LOCAL_PIVOT. Close every element and the root with its matching closing tag. Escape XML special characters in section text. Do not emit Markdown fences, tool calls, JSON messages, nested elements, or placeholder text."
+          },
+          {
+            "role": "user",
+            "content": "Goal: Parity regression goal.\nPrevious ledger: none\nHistorical prefix:\n[{\"content\": \"Historical observation: café — 😀.\", \"role\": \"user\"}]"
+          }
+        ],
+        "temperature": 0,
+        "max_tokens": 512
+      }
+    },
+    {
+      "hybrid": false,
+      "payload": {
+        "model": "parity-model",
+        "messages": [
+          {
+            "role": "system",
+            "content": "Summarize only the supplied historical prefix and previous ledger. Copy the original goal exactly. Do not reconstruct recent raw messages. Carry forward prior useful lessons and dead ends. Keep provisional hypotheses separate from observations; do not present guesses as verified facts. Use only numbers appearing in the source. Do not calculate or invent statistics. Fill every section, using '- None.' if empty. No prose outside the structure. Escape XML special characters when using the XML format. Keep output short, within 4096 UTF-8 bytes. Return exactly four ordered headings: '- Core Objective:', '- Universal Truths Discovered:', '- Dead Ends:', '- Current Local Pivot:'. Put the original goal verbatim below the first heading, then source-grounded lessons, failed approaches, and a provisional next direction below the others. Do not emit placeholder text or tool calls."
+          },
+          {
+            "role": "user",
+            "content": "Goal: Parity regression goal.\nPrevious ledger: none\nHistorical prefix:\n[{\"content\": \"Historical observation: café — 😀.\", \"role\": \"user\"}]"
+          }
+        ],
+        "temperature": 0,
+        "max_tokens": 512
+      }
+    }
+  ]
+}

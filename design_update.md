@@ -1,5 +1,7 @@
 # Design update: port the upgraded Python agent to Go, Rust and Java
 
+**Active target: contract 2.0.0 / schema 6.** Section 19 overrides conflicting schema, API, recovery and qualification requirements in the retained baseline below. All four runtimes need this upgrade; the earlier status board records historical work, not 2.0.0 qualification. Python runtime implementation and focused regressions are recorded in section 19.6; final CLI qualification and the other runtime ports remain pending.
+
 Review date: **2026-10-18**. Target: **observable contract 1.1.0, storage schema 5**. This is the implementation upgrade specification for `agent-go`, `agent-rust` and `agent-java`. It covers the entire upgraded Python runtime, including the final-answer enforcement added after the original Python reference freeze.
 
 ## 1. Decision and document authority
@@ -175,7 +177,7 @@ Reference: [llm.py](agent-python/src/agent_python/llm.py), [model_errors.py](age
 - Native mode preserves every function call in order. Normalize each call independently, retaining raw argument text and any parsing error. Generate fresh IDs for missing/invalid IDs; reject reused IDs using both active memory and historical call lookup. Supply a correlated string result for every call, including rejected actions.
 - Single mode sets `parallel_tool_calls=false` and splits only outgoing historical wire groups into one assistant-call/result pair each. Keep original session batch identities/order/results intact. Disabled-tool policy removes the tool list and sets `tool_choice=none`; the runtime still rejects returned tool actions.
 - Empty/missing/malformed choice/content is a recoverable invalid response, not a fabricated successful answer. Invalid argument JSON is an invalid action, never a final answer containing an error sentence.
-- Preserve bounded error categories: `model_timeout`, `model_transport_error`, `model_http_error`, `model_template_error`, `invalid_model_response`, `empty_model_response`, context errors and action/completion rejection. Keep provider bodies/credentials out of public diagnostics.
+- Preserve bounded public error categories: `model_timeout`, `model_transport_error`, `model_http_error`, `model_template_error`, `invalid_model_response`, `empty_model_response`, context errors and action/completion rejection. Public session/API/SSE diagnostics never include provider bodies, credentials or unredacted provider messages. For operator diagnosis, emit a structured server-log record containing only HTTP status, allow-listed provider `type`/`code`/`param`, a bounded redacted message and validated provider request ID. Redact credentials, bearer/API tokens, URLs, quoted or request-echoed content and control characters; never log request/response bodies or headers. Restrict access and retention for these logs. See contract OBS-01.
 - Retain exact endpoint/root fallback behavior: alternate completion route only on 404. Do not retry other provider failures as a hidden model or policy substitution.
 - Preserve request timing/byte/budget diagnostics and known-versus-unknown usage. Async HTTP and database waits must not prevent lease renewal.
 
@@ -186,7 +188,7 @@ Reference: [llm.py](agent-python/src/agent_python/llm.py), [model_errors.py](age
 | DU-02-C01 | Controlled | Script one, multiple and mixed valid/invalid native calls in one response. Every call is retained in order with a unique correlated result; malformed arguments never become accepted final prose and no valid call is silently dropped. |
 | DU-02-C02 | Controlled | Test native, single and disabled tool policies. Compare complete outgoing request/message vectors, not just answers: single-mode pairs preserve every original call/result; disabled mode removes tools and uses `tool_choice:none`. Private recovery settings do not leak into schemas. |
 | DU-02-C03 | Controlled | Return absent/empty/malformed choices/content, invalid call structures and duplicate/missing call IDs. Correct categories and bounded correction occur; no fabricated successful final is returned. Historical ID reuse is also exercised once DU-05/09 storage is available. |
-| DU-02-C04 | Controlled | Inject HTTP 404, other HTTP failures, non-JSON bodies, template errors, transport failure and timeout. Only 404 triggers the documented alternate route; public diagnostics remain bounded and omit credentials/provider bodies. Count actual attempted requests. |
+| DU-02-C04 | Controlled | Inject HTTP 404, other HTTP failures, non-JSON bodies, template errors, transport failure and timeout. Only 404 triggers the documented alternate route; public diagnostics remain bounded and omit credentials/provider bodies. For structured provider errors, assert allow-listed/redacted fields reach the operator log, with no raw body, request data, secret, or header. Count actual attempted requests. |
 | DU-02-C05 | Curl | Run profile Tests 1, 2 and 6 after engine integration. Required action/result/validator traces are present. These live cases do not force multi-call, malformed-provider or wire-policy paths. |
 
 **Benchmark:** no independent throughput/live-model benchmark. Capture attempted decision/summary HTTP calls, fallback count, error category, serialized request bytes and elapsed samples in the controlled cases. A slow-call renewal check is shared with DU-07-C03 rather than duplicated here. Historical starting points: archived `test_milestone_2.py`, `test_milestone_2_followups.py`, `test_milestone_1_followups.py` and provider-wire checks in the archived runner.
@@ -318,7 +320,7 @@ Journal at least the Python record kinds: model decisions, rejected finals/decis
 
 ## 9. DU-06 — PostgreSQL schema and atomic commit
 
-Reference: [persistence.py](agent-python/src/agent_python/persistence.py), [execution_store.py](agent-python/src/agent_python/execution_store.py), [storage.py](agent-python/src/agent_python/storage.py). Exact earlier DDL is preserved in [schema.sql](archive/agent-python-cleanup-20261016/reference/python-1.0.0/schema.sql); compare current initializer code before adopting a schema snapshot.
+Reference: [persistence.py](agent-python/src/agent_python/persistence.py), [execution_store.py](agent-python/src/agent_python/execution_store.py), [storage.py](agent-python/src/agent_python/storage.py), and the current shared [schema](schema/postgres.sql). The earlier ten-table DDL is historical.
 
 | Table | Required contents/keys beyond the old baseline |
 | --- | --- |
@@ -331,9 +333,7 @@ Reference: [persistence.py](agent-python/src/agent_python/persistence.py), [exec
 | `agent_session_diagnostics` | PK session/family/positive ordinal; immutable JSON payload |
 | `agent_session_calls` | Historical session/call/message mapping with transcript FK; no scanning all historical messages for reused call IDs |
 | `agent_archive_receipts` | Archive UUID; session/revision/checksum/manifest/timestamp; dependency receipt |
-| `agent_schema_migrations` | Component/version key and applied time; preserve shared schema-5 readiness semantics |
-
-All ten tables are required. Existing primary/unique/page indexes and foreign keys are part of the design, not optional performance decoration. The runtime initializer contains legacy import logic; fresh `universal_state` setup does not require data from another project. Legacy import, if exercised, must mark unavailable history honestly and remain transactional/idempotent.
+The nine tables above are required. Existing primary/unique/page indexes and foreign keys are part of the design. The explicit database initializer creates the shared schema; servers validate it read-only and neither migrate nor import legacy sessions automatically, as required by [contract.md](contract.md).
 
 ### Save protocol
 
@@ -346,22 +346,79 @@ All ten tables are required. Existing primary/unique/page indexes and foreign ke
 
 Do not implement this as multiple autocommit statements or swallow a failed save and then emit success. Identical replay is not permission to replace immutable transcript content. Conflicting UUID/sequence/payload, gaps, invalid summary references, changed config/goal or stale revision must fail.
 
-Startup takes **session-level advisory lock `734910003`** across DDL commit **and subsequent abandoned-run metadata recovery**. Release in cleanup. A transaction-only DDL lock does not preserve this boundary. Check current schema before repeating DDL; propagate failures rather than retrying until a startup test happens to pass. The current compatibility marker uses `component='agent-python', version=5`; a port must recognize shared readiness rather than create conflicting per-language storage meanings.
+The explicit initializer serializes schema creation with its advisory lock. Server startup validates the existing schema in a read-only transaction and recovers abandoned runs under the ownership and fencing rules; it performs no schema DDL or automatic legacy import. Propagate initialization, validation and recovery failures.
 
-### DU-06 checks and measurements
+### DU-06 checks and measurements — contract 1.1.0 — DEPRECATED
+
+**Deprecated for contract 2.0.0:** the following C01–C06 table, benchmark paragraph and done criterion are preserved as historical contract-1.1.0 testing requirements. They no longer govern current DU-06 acceptance. Use the contract-2.0.0 matrix immediately below. Deprecation does not erase previously recorded test evidence or the underlying atomicity/identity guarantees.
 
 | Check ID | Mode | Required exercise and pass criterion |
 | --- | --- | --- |
-| DU-06-C01 | SQL | Initialize a disposable empty schema, inspect all ten tables/constraints/indexes, repeat initialization and exercise supported legacy imports. Repetition is safe; genuine unavailable history is marked; the normal fresh database path needs no other-project migration. |
+| DU-06-C01 | SQL | Use the explicit initializer on a disposable empty schema; inspect the nine shared tables, constraints and indexes; repeat initialization and confirm no schema changes. Servers reject absent or incompatible schemas and unsupported legacy projections without creating, modifying or migrating schema objects. |
 | DU-06-C02 | SQL | Inject failure after each aggregate-write stage: snapshot, transcript, call map, diagnostics, run/tool updates, event, context and staged retention. Every affected table rolls back; caller revision/outboxes are not falsely acknowledged. |
 | DU-06-C03 | SQL | Load two copies at one revision, save one and try the stale one. Exactly one revision transition succeeds; stale writer gets the specified conflict and cannot overwrite committed state. Also reject changed goal/config/raw anchor. |
 | DU-06-C04 | SQL/Fault | Lose a commit acknowledgement and retry the same commit identity/content. Acknowledge the original revision without duplicate transcript/event/outcome; changed identity/content is rejected. Validate restored full payload and context revision. |
-| DU-06-C05 | Fault | Start at least two actual target workers together on an empty and an already-current disposable schema. DDL commit plus abandoned recovery stays under the shared advisory guard; all workers start without hidden retries/deadlocks and real failures propagate. |
+| DU-06-C05 | Fault | Start at least two actual target workers together against a disposable initialized schema and verify safe abandoned-run recovery without schema changes or hidden retries. On an empty or incompatible schema, workers fail with setup guidance without creating schema objects; real validation and recovery failures propagate. |
 | DU-06-C06 | Curl | Run section 11 server restart and sections 12–14 history/page inspection. These corroborate durable reads but do not replace the rollback, duplicate-commit or startup fault cases. |
 
 **Benchmark:** no standalone SQL throughput target. Capture commits/revisions, transaction failures and elapsed observations. Use DU-09-B01 for measured repository growth/concurrency after these correctness gates; do not benchmark an unsafe repository first. Historical starting points: archived `test_milestone_3_postgres.py`, `test_milestone_5_postgres.py`, `test_milestone_5_startup_postgres.py` and process/startup workers.
 
 **Done:** real PostgreSQL rollback, identical duplicate acknowledgement, identity collision, stale writer, restart hydration and concurrent startup evidence pass before port conformance is claimed. DU-06-C01 through C06 pass.
+
+### DU-06 contract 2.0.0 checks and measurements — current
+
+This section supersedes the deprecated contract-1.1.0 DU-06 testing matrix and its benchmark/done criteria above. The historical checks and results remain preserved; they do not impose additional acceptance gates on contract 2.0.0. Versioned check IDs prevent the old and new criteria from being confused.
+
+DU-06 now qualifies durable command identity, atomic ledger transitions, and recovery by replay on the initialized schema 6. Every implementation receives the same normal API requests and PostgreSQL assertions. Tests select the target through its URL and database connections, without identifying its implementation language, calling native repository methods, installing production hooks/callbacks, altering schema, or directly editing ledger rows. External process/connection controls may interrupt test operations; their actual occurrence must be recorded. Administrative schema creation remains an explicit setup operation.
+
+An acknowledgement can still be lost with idempotency keys. A durable identity and atomically recorded outcome allow safe replay and outcome recovery. Missing a caller response must not create a new logical operation. These checks do not require manufacturing a particular database-driver exception or proving interruption at every internal write stage. They require proof of the observable scenario and its committed ledger outcome.
+
+| Ledger record | Identity and evidence being verified |
+| --- | --- |
+| Command | Accepted request key/namespace, normalized request fingerprint, processing state, assigned session, and recorded terminal response |
+| Commit receipt | Immutable commit identity/fingerprint and the atomic expected/committed revision transition |
+| Action execution | Stable logical action identity/key, frozen payload/fingerprint, recovery policy, state and definitive outcome when known |
+| Action attempt | One dispatch or verification attempt, its initiating command/owner/fence, evidence and settlement |
+
+Command and execution statuses are `pending`, `started`, `succeeded`, `failed`, `uncertain`, and `blocked`. They are not a mandatory linear sequence: successful work need not visit `uncertain` or `blocked`. Attempt statuses are `started`, `succeeded`, `failed`, and `uncertain`; commit receipts are immutable records rather than another state machine. Tests validate each record's contract-defined meaning without requiring observation of every transient state.
+
+| Check ID | Scenario | Required PostgreSQL evidence and passing result |
+| --- | --- | --- |
+| DU-06-V2-C01 — Shared schema and identity | Start the configured agent against the initialized schema and submit a valid keyed command. | The pinned shared schema exists. Exactly one command records the key, namespace/client scope, normalized request fingerprint and assigned session. Related records reference the correct command. Runtime startup does not modify schema. |
+| DU-06-V2-C02 — Completed-command replay | Complete a command and submit the identical request/key repeatedly. | Each replay returns the original recorded response. Replay creates no additional session, message, run, action, committed revision or logical effect. |
+| DU-06-V2-C03 — Conflicting key reuse | Reuse the key with a changed payload or another route. | The defined conflict is returned. Original request identity, stored outcome and committed effects remain unchanged. |
+| DU-06-V2-C04 — Concurrent duplicates | Submit several identical requests/key concurrently. | Exactly one command identity and one logical operation exist. Responses identify that command while pending or return its original terminal response. After settlement, every replay resolves to the same outcome. |
+| DU-06-V2-C05 — Replay after subsequent work | Complete command A, complete later commands, then replay A. | A returns its original response. Later state/revisions remain intact. Historical replay neither rolls the session back nor adds another committed effect. |
+| DU-06-V2-C06 — Outcome recovery after missing response | Submit a keyed command without relying on its response. Read command status/ledger and replay the same request/key. | If committed, replay returns the recorded outcome without another effect. If unresolved, it identifies the same command and follows the defined recovery behavior. Missing confirmation never allocates a replacement command identity. This exercises caller uncertainty; it does not claim a PostgreSQL COMMIT response was suppressed. |
+| DU-06-V2-C07 — Interruption and atomicity | Interrupt a test operation through external process or connection control. After recovery, inspect its ledger and replay its original request/key. | Each committed revision has a consistent snapshot, context, receipt and associated records. No partially committed aggregate exists. Separately committed admission/attempt records may legitimately remain unresolved. Recovery preserves those identities. Record the actual interruption; ordinary successful replay alone cannot pass this case. |
+| DU-06-V2-C08 — Restart durability | Record command outcomes and ledger identities, restart the agent, then retrieve and replay them. | Keys, fingerprints, recorded responses, transcript identities and receipts survive. Restart adds no duplicate committed effects. Unresolved work remains identifiable. Record actual restart evidence. |
+| DU-06-V2-C09 — Concurrent ownership and revision consistency | Run two agent instances against the same database. Submit concurrent duplicate commands and competing operations on one session. | Duplicates converge on one identity. Competing operations follow contract-defined serialization/conflict behavior. Committed revisions form a valid chain; no accepted operation silently overwrites another. Record both worker endpoints and the requests sent to each. |
+| DU-06-V2-C10 — State and outcome consistency | Exercise success, definitive failure and interruption scenarios. | `succeeded`/`failed` have required durable outcomes. `uncertain` does not claim a definitive result. `blocked` retains evidence explaining why safe recovery cannot proceed. A definitively failed command replays its original failure instead of silently executing again. State/effect conclusions must be supported by the specific scenario; not every command must traverse all states. |
+| DU-06-V2-C11 — Ledger relationships and immutability | Inspect every test session/command, including after replay and restart. | Receipt revisions agree with snapshot/context revisions. Transcript sequences/identities are consistent. Run/action/attempt references resolve correctly. Previously committed immutable records remain unchanged. A verification attempt may originate from a later resume command while retaining the original action identity. |
+| DU-06-V2-C12 — Protected recovery evidence | Verify retention declarations; where a common administrative interface exists, perform approved telemetry pruning on test sessions after verified export. | Command identities/responses, commit receipts, action identities/attempts and unresolved evidence remain available. Original commands still replay correctly. A retention plan proves declarations only. Actual pruning protection remains unqualified unless pruning is exercised through a common interface and verified. |
+
+External action dispatch, recipient deduplication and authoritative reconciliation are primarily DU-07 responsibilities. DU-06 verifies durable storage and relationships for their identities, states, attempts and outcomes. A ledger key alone cannot establish that an external recipient executed an effect once; that conclusion requires recipient evidence and its actual deduplication or verification capability.
+
+#### Contract 2.0.0 measurements
+
+Every measurement is scoped to the scenario's keys, commands and sessions. Concurrent unrelated database traffic is not counted as a test effect. Declare the intended effect of each operation before testing; a command may legitimately cause several internal commits or action records.
+
+| Measurement | Required interpretation/evidence |
+| --- | --- |
+| Submitted requests and distinct keys | Separate retries from intentionally new operations. Record method, route and request fingerprint. |
+| Command identities per key/namespace/client scope | Exactly one for each admitted logical command. |
+| Responses and replay outcomes | Original terminal status/body remain consistent. In-progress duplicates identify the same command. |
+| Committed effects per logical operation | Match the scenario's declared expected effect count; identify the ledger or recipient records establishing the effect. |
+| Revision and commit-receipt deltas | New operations advance state appropriately. Completed replay adds none. Verify expected/committed revision relationships. |
+| Transcript/run/execution/attempt counts | Detect duplicated work and missing evidence. Dispatch retries and verification attempts are separate from logical action/effect counts. |
+| Observed state transitions | Supported by retained ledger, event and attempt evidence; absence of a transient state from a polling sample is not a failure. |
+| Interruption/restart evidence | Record which test process/connection was controlled, when it occurred and the observed recovery. Never label an unperformed fault as covered. |
+| Time to settle or reach a defined unresolved state | Record elapsed time and a declared watchdog. `uncertain`/`blocked` can be valid scenario outcomes; they are not silently treated as success. |
+| Ledger invariant violations | Zero for passing scenarios. Keep exact offending identities and before/after evidence. |
+| Retained evidence | Request identifiers, response captures, consistent PostgreSQL snapshots and relevant operator/process logs; exclude credentials. |
+
+**Contract 2.0.0 passing rule:** expected API behavior and matching PostgreSQL evidence are both required. A successful HTTP response alone is insufficient. Every check reports `passed`, `failed`, or `not_exercised`, with exercised scope and evidence paths. An unexercised required interruption, two-worker, restart or pruning behavior remains explicitly unqualified; it cannot be converted into a full DU-06 pass. Do not infer runtime qualification from schema setup or redefine the expected state/effect after observing the result. The shared runner now dispatches these twelve versioned cases. Live user-run validation remains pending; implementation of the runner is not evidence that an agent passed.
+
 
 ## 10. DU-07 — Ownership, durable tool execution and recovery
 
@@ -417,11 +474,11 @@ Startup and the operational reconciliation command detect abandoned running rows
 | --- | --- | --- |
 | DU-08-C01 | Curl | Run Test 5 continuation, Test 6 bounded stop/resume and section 11 restart. Goal/config remain unchanged; new runs advance identity/count/fence; completed workflow continuation stays final-only. |
 | DU-08-C02 | Curl/Fault | Run section 16 explicit cancel against the second process while the first owns a committed run. Cancel response names the target run, known results settle, no new actions execute after cancellation acknowledgement, and continuation uses a new owner/run. |
-| DU-08-C03 | Curl/Fault | Run section 15 with an SSE reader kept alive until deliberate socket closure. Confirm an actually running trial, same-run cancellation within the existing 120-second probe ceiling, an unchanged three-second stopped snapshot, then error-free completion with a new run/higher fence, all eleven evidence records and preserved transcript prefix. A task that finishes before deliberate close is unexercised, not passed. |
+| DU-08-C03 | Curl/Fault | Run the Python socket integration suite in section 15. Confirm a connected control, active SSE reader and gated model request, explicit TCP shutdown, same-run durable cancellation notification before releasing the model, terminal cancellation, and completion on resume with a new run/higher fence, exact invocation counts and preserved transcript prefix. A task that finishes before deliberate close is unexercised, not passed. |
 | DU-08-C04 | Fault | Exercise JSON-request disconnect, cancellation during an in-flight synthetic invocation, worker loss and abandoned startup. Preserve the known result or uncertain state as appropriate; startup never invokes user tools/models; explicit resume applies recovery policy. |
 | DU-08-C05 | Controlled/SQL | Delay/fail the terminal commit while observing output. No successful final event is exposed before task/run/result state commits. Test HTTP pre-stream conflicts and post-header SSE conflicts separately. |
 
-**Measurements:** save closure/cancel-request, durable acknowledgement and resume-completion timestamps; per-trial observed durations; run/fence/revision pairs; pre-close/stopped/stable/final snapshots; SSE/events/transcript and worker logs, including failures. The 120-second ceiling permits an invocation to settle and is not a production cancellation SLA. No additional throughput benchmark. Historical starting points: archived `test_disconnect_probe.py`, managed deployment/startup workers and `verify_milestone_5_deployment.py`. Port-specific lifecycle adapters remain required.
+**Measurements:** save closure/cancel-request, durable acknowledgement and resume-completion timestamps; per-trial observed durations; run/fence/revision pairs; pre-close/stopped/stable/final snapshots; SSE/events/transcript and worker logs, including failures. The default 120-second per-signal watchdog detects hangs and is not a production cancellation SLA. Gates determine ordering. The executable implementation is `scripts/disconnect_integration_test.py`; obsolete disconnect probes are removed. No additional throughput benchmark. Port-specific lifecycle adapters remain required.
 
 **Done:** true two-process conflicts produce 409; cancellation targets the right identity; actual socket close yields a durable stable stop; resume uses a new run/fence and preserves the exact transcript prefix. DU-08-C01 through C05 pass. A client curl timeout alone is insufficient proof.
 
@@ -597,12 +654,12 @@ The source-review status board starts as follows. Update a cell only with the co
 
 | Work package | Check set | Go | Rust | Java |
 | --- | --- | --- | --- | --- |
-| DU-01 Configuration/strict values | C01–C05 | Complete (user-run evidence in `digest-go.md`) | Pending | Pending |
-| DU-02 Model adapter/wire/errors | C01–C05 | Complete: controlled suite, full `go test ./...`, and C05 Tests 1, 2 and 6 passed in user-run evidence (see `digest-go.md`) | Pending | Pending |
-| DU-03 Engine/evidence/completion/progress | C01–C05 | Complete: focused DU-03 tests, full `go test ./...`, and C05 Tests 1–6 passed in user-run evidence (see `digest-go.md`) | Pending | Pending |
-| DU-04 Context/budgets/compaction | C01–C04, B01 | Complete: controlled checks, 54-trial B01 grid, regression/full suite, `git diff --check`, and C04 Tests 3/4 with compaction diagnostics passed in user-run evidence (`digest-go.md`) | Pending | Pending |
-| DU-05 State/immutable transcript | C01–C04 | Complete: controlled/SQL checks, regression/full suite, live append-stop-restart-resume-pagination and compaction transcript integrity passed in user-run evidence (`digest-go.md`) | Pending | Pending |
-| DU-06 Schema/atomic repository | C01–C06 | Pending | Pending | Pending |
+| DU-01 Configuration/strict values | C01–C05 | Complete (user-run evidence in `digest-go.md`) | Complete: user-reported C01–C05 checks and server preflight passed (see `digest-rust.md`) | Pending |
+| DU-02 Model adapter/wire/errors | C01–C05 | Complete: controlled suite, full `go test ./...`, and C05 Tests 1, 2 and 6 passed in user-run evidence (see `digest-go.md`) | Complete: controlled C01–C04, full 19-test Rust suite/checks, and C05 Tests 1, 2 and 6 passed in user-run evidence (see `digest-rust.md`) | Pending |
+| DU-03 Engine/evidence/completion/progress | C01–C05 | Complete: focused DU-03 tests, full `go test ./...`, and C05 Tests 1–6 passed in user-run evidence (see `digest-go.md`) | Complete: focused C01–C04, full 23-test Rust suite/checks, and all six shared C05 HTTP profiles passed in user-run evidence (see `digest-rust.md`) | Pending |
+| DU-04 Context/budgets/compaction | C01–C04, B01 | Complete: controlled checks, 54-trial B01 grid, regression/full suite, `git diff --check`, and C04 Tests 3/4 with compaction diagnostics passed in user-run evidence (`digest-go.md`) | Implemented; user-run C01–C04 and 54-trial B01 pending (`digest-rust.md`) | Pending |
+| DU-05 State/immutable transcript | C01–C04 | Complete: controlled/SQL checks, regression/full suite, live append-stop-restart-resume-pagination and compaction transcript integrity passed in user-run evidence (`digest-go.md`) | Implemented core message identity, revision, append-only transcript persistence and paging; C01–C04 validation pending | Pending |
+| DU-06 Schema/atomic repository | Contract 2.0.0: DU-06-V2-C01–C12 (1.1.0 C01–C06 deprecated) | Pending current shared qualification; archived pre-contract checks passed (`digest-go.md`) | Pending | Pending |
 | DU-07 Ownership/tool recovery | C01–C05 | Pending | Pending | Pending |
 | DU-08 Lifecycle/cancellation/service | C01–C05 | Pending | Pending | Pending |
 | DU-09 Hydration/history/API pages | C01–C03, B01 | Pending | Pending | Pending |
@@ -619,3 +676,102 @@ For each target language record implementation status and evidence location for 
 - That language's docs/OpenAPI describe its upgraded implementation, and its old pending/historical banner is removed only after conformance review.
 
 This review changes design/navigation documentation only. The implementation tables remain a port backlog. The Python HTTP pass is recorded as the user's report; historical freezes and test results remain unmodified. Future implementation turns should cite this document and the specific work-package IDs they complete.
+
+## 19. Contract 2.0.0 / schema 6 overriding upgrade plan
+
+This section overrides the retained 1.1.0 implementation plan where requirements conflict. [Contract 2.0.0](contract.md#contract-200--durable-commands-and-action-recovery) defines the shared observable behavior. There is no backward compatibility requirement. The preceding status board records historical port work only; it does not certify the new contract. Python requires this upgrade as well as Go/Rust/Java. Do not claim runtime conformance from setup tests or an older successful business workload.
+
+### 19.1 Shared identities and authoritative storage
+
+Use RFC 8785/JCS UTF-8 canonical bytes and lowercase SHA-256 hex for the exact versioned preimages in the contract. Pin every implementation to `schema/idempotency-vectors.json`, including canonical bytes and hashes, with duplicate-key/nonfinite/invalid-Unicode rejection. Preserve the separate existing configuration hash semantics unless a later explicit requirement changes them. Exact monetary/large integer values are strings. Runtime worker IDs, language labels, model step numbers and run IDs do not enter logical action identity.
+
+New schema 6 is defined by `schema/postgres.sql`, validated by `schema/validate.sql`, and pinned structurally by `schema/layout-v6.json`. The explicit initializer owns DDL and optionally resets known development tables. Runtime startup remains read-only. The twelve shared tables consist of the prior nine plus:
+
+| Table / changed projection | Required design |
+| --- | --- |
+| `agent_commands` | UUID identity; unique namespace/client/key; immutable normalized method/route/request/hash; pending/started/succeeded/failed/uncertain/blocked; optional assigned session; command lease/fence; stored terminal status/body/time |
+| `agent_commit_receipts` | Immutable session/commit identity; origin command; full fingerprint; expected/committed revisions; unique committed revision; atomic with protected save |
+| `agent_action_attempts` | UUID plus per-execution ordered attempt number; dispatch/verify kind; recovery command; owner/fence; payload hash; timestamps and recipient evidence/error |
+| `agent_runs` | Required unique origin command; same session/command relation; one admitted run command cannot create a second run |
+| `agent_tool_executions` | Origin command/run, stable namespace/target, `agent-action-v1`, 64-hex text action key, independent payload fingerprint, frozen arguments/policy, blocked status |
+| `agent_session_events` | Command identity and deferred FK to the atomic commit receipt; durable event IDs for reconnection |
+| `agent_sessions` | Storage version 6; latest commit cache retained; old writers rejected rather than converted |
+
+Preserve original action/run association on resume; a new recovery command owns new attempts and commits, not a replacement logical action. Read receipts before stale-revision conflict handling for exact retries. A replayed old receipt acknowledges its original outcome without restoring obsolete hot state. Protect command/commit/action/attempt history from telemetry-only pruning.
+
+### 19.2 Work packages and sequencing
+
+| Package | Implementation required | Acceptance |
+| --- | --- | --- |
+| V2-01 Identity | Shared JCS profile, strict input validation, derived action keys, separate request/payload/commit hashes, stable namespace | Fixed byte/hash vectors, reordered objects, distinct intent, same-ID changed payload, numeric/Unicode/type boundaries |
+| V2-02 Setup and fixtures | Twelve shared tables; six fixtures; explicit reset; exact repeat validation; deterministic reseed preserving receipts | Fresh/repeat setup; incompatible schema rejection; reset preserves unrelated objects; fixture fingerprints and existing business oracles |
+| V2-03 Commands / DU-06 | Required request key, atomic admission, command lease/fence, cached outcome, durable commit receipts and old-receipt replay | Identical/concurrent/restarted request replay, changed route/body rejection, one revision per new commit, complete rollback, lost database ACK resolution |
+| V2-04 Actions / DU-07 | Freeze intent before dispatch, real keyed recipient, authoritative verifier, uncertain/blocked outcome, persistent attempts/deadline | One effect after lost response; same key/payload across recovery; unsupported/expired deduplication blocks; ambiguous verification blocks; stale owners fenced |
+| V2-05 API/lifecycle / DU-08/09 | Command status GET, duplicate stream envelope, read-only event stream, explicit cancel run target, keyed resume | Reattachment creates zero new runs/model calls; delayed cancel retries target original; intentional resume new command/run retains old pending action IDs |
+| V2-06 Retention / DU-10 | Protected receipts and attempt evidence, no automatic key reuse/expiry; setup reset only under explicit administration | Telemetry prune preserves command/commit/action/attempt evidence and historical replay |
+| V2-07 Universal qualification | Shared Python controller, SQL ledger assertions and fixed inputs; actual selected runtime for HTTP/recovery | Same tests against Python/Go/Rust, then Java; source/backend/version evidence, no language-specific expected outcomes or production hooks |
+
+Setup/fixtures and the identity tooling can be implemented first. Then implement the Python runtime reference and qualify it; implement Go/Rust to the same requirements, followed by Java. The initial setup/specification stage did not implement those runtime changes; section 19.6 records the subsequent Python implementation. No runtime advertises contract 2.0.0/schema 6 until the relevant packages are implemented. Runtime qualification and full V2-07 conformance remain pending; section 19.6 records the Python implementation, while Go/Rust/Java still require their runtime changes.
+
+### 19.3 Concrete runtime algorithm
+
+1. Strictly validate key and request without invoking tools/models. Resolve static normalization and fingerprint; freeze dynamic configuration at initial admission. Unique command insertion arbitrates duplicates. Changed content conflicts even if another route/session uses the same scoped key.
+2. Claim command authority before session authority. Recover only expired claims; use increasing command/session fences and heartbeat. Hydrate after claiming. A pending duplicate returns its existing handle; it never spawns another action loop.
+3. For a database-only operation, atomically write effect, session/history, receipt and terminal command response. For long work, commit accepted command identity first, then persistent execution/run milestones. Every save has a retained commit ID/proposal and its own receipt.
+4. Before each external action, commit its immutable logical identity, target, arguments, key, fingerprint and real adapter capability. Persist a started attempt, dispatch, then settle result/message/evidence/state together. Failure after effect but before settlement remains uncertain.
+5. Resolve uncertainty by receipt lookup, actual recipient deduplication under its guarantee, or authoritative operation-reference lookup. Never interpret a weak negative read as proof of nonexecution. Reconciliation records evidence; unsupported/expired/ambiguous cases block. Do not rerun the model to reconstruct an old action.
+6. Replay original outcomes without new revisions/runs/effects. Keep new intentional actions distinct. Record actual attempts, causal identities and recipient outcomes in PostgreSQL. Never promise global exactly-once execution for arbitrary tools.
+
+An internal service may settle an effect/result in the same PostgreSQL transaction when they share a database. Across independently committed systems, durable outbox/inbox and recipient deduplication still need atomic receipt/effect handling. The intent-act-complete sequence is not distributed 2PC. Notifications never replace authoritative ledger reads.
+
+### 19.4 Shared persistence qualification and evidence
+
+`persist.sh` remains a thin launcher into shared Python tooling. It reads `.env` for the existing server and database addresses. It must not install runtime hooks, create/drop/alter tables or triggers, directly write/delete database rows, reset schemas, or erase test evidence. Qualification mutations go through the normal agent API and are retained in the PostgreSQL ledger; database inspection uses read-only queries. Temporary process/network controls interrupt dedicated test connections and processes without directly editing database rows or schema. Administrative retention qualification uses an operator-controlled export/pruning step on a test-owned session through the deployment's normal administrative tooling, followed by independent archive and ledger verification. The shared runner never invokes a language-specific repository.
+
+| Check | Shared black-box coverage | Status |
+| --- | --- | --- |
+| V2-C01 | Read-only schema/fixture/vector validation and keyed command identity | Implemented in shared runner |
+| V2-C02/C03 | Keyed request replay, duplicate concurrency, changed-content rejection, receipt/context revisions | Implemented in shared HTTP scenarios |
+| DU-05/DU-07/DU-08/DU-09 | Run/resume records, history pages compared with PostgreSQL, SSE reconnect, socket cancellation, retention plan | Implemented in shared API/ledger scenarios |
+| DU-06 contract 2.0.0 | Section 9, DU-06-V2-C01–C12: durable identity, atomic ledger transitions and recovery by replay | Twelve versioned cases implemented in shared scripts; live user-run validation pending |
+| V2-C05/C06 | Recipient lost response, finite window and authoritative recovery | DU-07 coverage; no external recipient deduplication claim is inferred from DU-06 |
+| V2-C09 / DU-06-V2-C12 | Protected command/action/receipt evidence across actual telemetry pruning | Operator-controlled administration, independent export verification and original-command replay implemented |
+
+`persist.sh` launches `scripts/persistence_qualification.py`. `persistence_scenarios.py` sends the same normal API operations to the configured agent; `persistence_ledger.py` captures consistent read-only PostgreSQL snapshots and compares them with API history. The harness does not select or detect an implementation, call language-specific repositories, alter database objects, or directly mutate rows. Every agent receives the same requests and assertions.
+
+The live server must advertise contract 2.0.0/schema 6 before scenario writes. `persist.sh` now dispatches exactly `DU-06-V2-C01`–`DU-06-V2-C12` using `du06_cases.py`, `du06_client.py`, `du06_controls.py`, `du06_archive.py`, the shared ledger/schema/identity oracles and the existing external socket/model harness. It does not select a language or import agent runtime modules. C06 suppresses a real HTTP response externally and recovers from the ledger; C07 performs actual TCP shutdown during a held model invocation; C09 verifies two distinct OS listener processes and shared database ownership. These controls do not claim exact internal write-stage interruption or a lost PostgreSQL COMMIT ACK.
+
+C08 requests an operator restart and verifies listener process identity changed, schema remains pinned, settled rows survive and original commands replay. C09 requests second-worker readiness if necessary. C12 requests a fresh verified export and actual telemetry pruning through normal administrative tooling because the common API has no pruning mutation route. It then verifies the export against all pre-pruning records, proves telemetry removal, checks protected records and replays original commands. `--non-interactive`, `--skip-restart` and `--skip-pruning` leave unavailable required checks unexercised; they do not bypass qualification. `--session-id` adds read-only inspection of existing sessions. See test-cases.md section 19 for all prerequisites and controls. Only twelve passed cases plus valid final ledger evidence produce exit 0; failure is exit 1 and incomplete coverage is exit 2. Implementation is complete for this declared matrix; live agent validation remains pending.
+
+
+Do not alter archived 1.1.0 results. Run `test-cases.sh`, `persist.sh` and `aux-tests.sh` in the user's CLI after those clients and the selected server are upgraded to mandatory keys. Their previous unkeyed requests intentionally have no compatibility exemption. Record each actual result and its scope before marking any package complete.
+
+### 19.5 Development setup and handoff
+
+With all servers stopped, the operator may explicitly run:
+
+```bash
+uv run --project agent-python python agent-python/scripts/initialize_database.py --reset
+uv run --project agent-python python agent-python/scripts/generate_fixtures.py
+./persist.sh
+```
+
+Without `--reset`, the initializer creates an absent complete group or validates an already-correct layout, and rejects partial/old/corrupt layouts. Reset lists all known agent tables together, without CASCADE into unrelated dependencies. Initialization and reset for shared session/fixture URLs are atomic together; separate database URLs are separate transactions. Repeat fixture generation resets the business datasets/vectors deterministically while preserving recipient receipts and all session/recovery data.
+
+The current legacy runtime code is not schema-6 compatible: pending commit handling, execution key type, command/attempt writes and mandatory HTTP keys still need implementation. Rebuilding the database now is development preparation; do not mistake a successful schema check for permission to mark those runtimes upgraded.
+
+### 19.6 Python runtime implementation update — 2026-10-27
+
+Python V2-01 through V2-06 now have a runtime implementation and focused isolated regression coverage; final user-run qualification is pending. This supersedes the preceding blanket pending-runtime statement for Python only. Source modules: `identity.py`, `schema_validation.py`, `commands.py`, `command_api.py`, `persistence.py`, `execution.py`, `execution_store.py`, `api.py` and `retention.py`. Command request envelopes contain immutable normalized `input` and frozen `admission`; execution-outbox hashing includes both execution and attempt lists. Metadata-only cancellation commits its target/outcome without racing the active owner's hot revision.
+
+The shell clients record and send request keys and explicit cancel run IDs. The common socket harness carries keys as well. No production fault hooks were introduced. The full shared `persist.sh` matrix remains separate qualification work; its strict incomplete status is not removed by native Python test results. Go/Rust/Java implementation and cross-language evidence remain pending.
+
+Python regression evidence: 14 isolated real-PostgreSQL/HTTP/TCP tests passed, including ten aggregate-write fault families, uncertain commit acknowledgement, historical receipts, keyed recipient recovery, verification, concurrent admission, startup, protected retention and real socket cancellation/resume. Five offline identity/setup tests passed. These are controlled engineering regressions; no live-provider workload or user shell suite was executed.
+
+## Compaction portability clarification — 2026-10-29
+
+The [normalization update](agent-python/docs/compaction.md#2026-10-29-normalization-update--porting-requirements) is the implementation reference for matching Python compaction in Go, Rust and Java. It supersedes earlier exact-presentation requirements: strip a complete outer fence, flatten nested section text, restore the immutable goal in code, and canonicalize the four required hybrid sections. Preserve completeness checks, numeric-source checks, byte limits, provider truncation rejection, source provenance and staged complete-request reduction checks. Do not treat harmless Markdown/list markup as loss of summary completeness. Do not interpret an accepted reflection as verified workflow evidence. No schema change accompanies this clarification.
+
+Validation status update superseding earlier Python pending statements: user-run `test-cases.sh` passed with successful compaction, auxiliary items 11–16 completed, and all twelve DU-06-V2 cases passed in `archive/persistence/20261029T145016-e80e86cd/result.json`. Cross-language implementation/qualification remains pending. This records the declared suite scope, not whole-contract conformance.
+
+The current persistence qualification is documented in section 9 and [test-cases.md section 19](test-cases.md#19-shared-postgresql-persistence-qualification), including all twelve cases, environment/prerequisites, restart/second-worker controls, read-only database verification, mandatory C12 export/pruning, skip behavior, artifacts and exit codes. The shared harness does not invoke a language-specific repository. For Python's operator C12 commands see [operations.md](agent-python/docs/operations.md#retention-explicit-administration-only).

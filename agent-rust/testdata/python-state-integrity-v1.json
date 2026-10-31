@@ -1,0 +1,63 @@
+{
+  "compacted_context": null,
+  "hot": {
+    "_active_integrity": {
+      "context_sha256": "6e67e201e20a8c59fd0db560fa1e8120fd2832fe491d8f1012d8af3d260ce4b4",
+      "snapshot_sha256": "13dde9f5af6dba76725c341f52654226331d695810fedc95c2de8461375338c7",
+      "version": 1
+    },
+    "active_ledger_id": null,
+    "compaction_savings_known": true,
+    "compaction_savings_total": 0,
+    "compaction_skip_counts": {},
+    "compaction_trigger_counts": {},
+    "completion_artifacts": {},
+    "config_ref": null,
+    "config_sha256": null,
+    "consecutive_invalid_responses": 0,
+    "diagnostic_counts": {},
+    "diagnostic_history_complete": true,
+    "diagnostic_rejections": 0,
+    "final_answer": null,
+    "goal": "Preserve café & verified 12.5",
+    "history_complete": true,
+    "id": "11111111-1111-4111-8111-111111111111",
+    "last_archive_id": null,
+    "last_compaction_attempt_sha256": null,
+    "last_compaction_attempt_step": null,
+    "last_compaction_estimated_tokens": null,
+    "last_compaction_step": 0,
+    "last_error": null,
+    "next_transcript_sequence": 2,
+    "no_progress_steps": 0,
+    "pending_tool_calls": [],
+    "progress_fingerprint": null,
+    "progress_seen_outputs": [],
+    "request_budget": null,
+    "resolved_config_sha256": null,
+    "revision": 0,
+    "run_command_id": null,
+    "run_count": 0,
+    "run_ended_at": null,
+    "run_id": null,
+    "run_started_at": null,
+    "run_status": "idle",
+    "run_termination_reason": null,
+    "status": "active",
+    "step_count": 0,
+    "workflow": null
+  },
+  "ledger_state": null,
+  "memory": [
+    {
+      "content": "Preserve café & verified 12.5",
+      "created_at": "2026-10-29T00:00:00Z",
+      "message_id": "22222222-2222-4222-8222-222222222222",
+      "name": null,
+      "role": "user",
+      "sequence": 1,
+      "tool_call_id": null,
+      "tool_calls": null
+    }
+  ]
+}

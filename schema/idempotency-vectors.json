@@ -1,0 +1,151 @@
+{
+  "contract_version": "2.0.0",
+  "canonicalization": "RFC8785",
+  "actions": [
+    {
+      "vector_id": "original",
+      "namespace": "development-fixture",
+      "session_id": "11111111-1111-4111-8111-111111111111",
+      "execution_id": "22222222-2222-4222-8222-222222222222",
+      "action_type": "fixture_write",
+      "target": "fixture://recipient/account-1",
+      "arguments": {
+        "amount": "125.00",
+        "currency": "USD",
+        "memo": "café"
+      },
+      "expected_key": "36d9390897b08e1877e7b8e981ee2f3bb878826b1845c9f34798ad125dfe0d55",
+      "expected_payload_sha256": "fb16149120541e503437a1fa3f2c63066aa22e02c4b62cac1ad4f99864057a0d",
+      "canonical_key": "[\"agent-action-v1\",\"development-fixture\",\"11111111-1111-4111-8111-111111111111\",\"22222222-2222-4222-8222-222222222222\"]",
+      "canonical_payload": "[\"agent-payload-v1\",\"fixture_write\",\"fixture://recipient/account-1\",{\"amount\":\"125.00\",\"currency\":\"USD\",\"memo\":\"café\"}]"
+    },
+    {
+      "vector_id": "retry_reordered",
+      "namespace": "development-fixture",
+      "session_id": "11111111-1111-4111-8111-111111111111",
+      "execution_id": "22222222-2222-4222-8222-222222222222",
+      "action_type": "fixture_write",
+      "target": "fixture://recipient/account-1",
+      "arguments": {
+        "memo": "café",
+        "currency": "USD",
+        "amount": "125.00"
+      },
+      "expected_key": "36d9390897b08e1877e7b8e981ee2f3bb878826b1845c9f34798ad125dfe0d55",
+      "expected_payload_sha256": "fb16149120541e503437a1fa3f2c63066aa22e02c4b62cac1ad4f99864057a0d",
+      "canonical_key": "[\"agent-action-v1\",\"development-fixture\",\"11111111-1111-4111-8111-111111111111\",\"22222222-2222-4222-8222-222222222222\"]",
+      "canonical_payload": "[\"agent-payload-v1\",\"fixture_write\",\"fixture://recipient/account-1\",{\"amount\":\"125.00\",\"currency\":\"USD\",\"memo\":\"café\"}]"
+    },
+    {
+      "vector_id": "changed_payload",
+      "namespace": "development-fixture",
+      "session_id": "11111111-1111-4111-8111-111111111111",
+      "execution_id": "22222222-2222-4222-8222-222222222222",
+      "action_type": "fixture_write",
+      "target": "fixture://recipient/account-1",
+      "arguments": {
+        "amount": "126.00",
+        "currency": "USD",
+        "memo": "café"
+      },
+      "expected_key": "36d9390897b08e1877e7b8e981ee2f3bb878826b1845c9f34798ad125dfe0d55",
+      "expected_payload_sha256": "194264bd63de44feb2f474958ad2df2f1a1356b4c2143e80887651ff065a8f52",
+      "canonical_key": "[\"agent-action-v1\",\"development-fixture\",\"11111111-1111-4111-8111-111111111111\",\"22222222-2222-4222-8222-222222222222\"]",
+      "canonical_payload": "[\"agent-payload-v1\",\"fixture_write\",\"fixture://recipient/account-1\",{\"amount\":\"126.00\",\"currency\":\"USD\",\"memo\":\"café\"}]"
+    },
+    {
+      "vector_id": "second_intent",
+      "namespace": "development-fixture",
+      "session_id": "11111111-1111-4111-8111-111111111111",
+      "execution_id": "33333333-3333-4333-8333-333333333333",
+      "action_type": "fixture_write",
+      "target": "fixture://recipient/account-1",
+      "arguments": {
+        "amount": "125.00",
+        "currency": "USD",
+        "memo": "café"
+      },
+      "expected_key": "2c5d7a7a191e1307be4266a8f4de05c5b8dc67a5149fbc797f15b33bf7afe75a",
+      "expected_payload_sha256": "fb16149120541e503437a1fa3f2c63066aa22e02c4b62cac1ad4f99864057a0d",
+      "canonical_key": "[\"agent-action-v1\",\"development-fixture\",\"11111111-1111-4111-8111-111111111111\",\"33333333-3333-4333-8333-333333333333\"]",
+      "canonical_payload": "[\"agent-payload-v1\",\"fixture_write\",\"fixture://recipient/account-1\",{\"amount\":\"125.00\",\"currency\":\"USD\",\"memo\":\"café\"}]"
+    },
+    {
+      "vector_id": "namespace_isolation",
+      "namespace": "another-deployment",
+      "session_id": "11111111-1111-4111-8111-111111111111",
+      "execution_id": "22222222-2222-4222-8222-222222222222",
+      "action_type": "fixture_write",
+      "target": "fixture://recipient/account-1",
+      "arguments": {
+        "amount": "125.00",
+        "currency": "USD",
+        "memo": "café"
+      },
+      "expected_key": "fb1b1c99b145beab1fd2ce7e30470e404b9455ec796a239abb3eb69a3f3c82ab",
+      "expected_payload_sha256": "fb16149120541e503437a1fa3f2c63066aa22e02c4b62cac1ad4f99864057a0d",
+      "canonical_key": "[\"agent-action-v1\",\"another-deployment\",\"11111111-1111-4111-8111-111111111111\",\"22222222-2222-4222-8222-222222222222\"]",
+      "canonical_payload": "[\"agent-payload-v1\",\"fixture_write\",\"fixture://recipient/account-1\",{\"amount\":\"125.00\",\"currency\":\"USD\",\"memo\":\"café\"}]"
+    },
+    {
+      "vector_id": "numeric_unicode",
+      "namespace": "development-fixture",
+      "session_id": "11111111-1111-4111-8111-111111111111",
+      "execution_id": "44444444-4444-4444-8444-444444444444",
+      "action_type": "fixture_write",
+      "target": "fixture://recipient/account-1",
+      "arguments": {
+        "😀": 1.0,
+        "�": -0.0,
+        "a": [
+          true,
+          1,
+          null,
+          0.49860264227642276,
+          1e-07,
+          9007199254740991
+        ],
+        "text": "line\n雪"
+      },
+      "expected_key": "a9200f7a6d929fe2f2406e12c11f28a82b6901c17f03c7419c85e23752e487b3",
+      "expected_payload_sha256": "63f8ba3f86583c5cc8ad1400d511f778f6b79f60b4e53effbcd87cd722a3d7fd",
+      "canonical_key": "[\"agent-action-v1\",\"development-fixture\",\"11111111-1111-4111-8111-111111111111\",\"44444444-4444-4444-8444-444444444444\"]",
+      "canonical_payload": "[\"agent-payload-v1\",\"fixture_write\",\"fixture://recipient/account-1\",{\"a\":[true,1,null,0.49860264227642276,1e-7,9007199254740991],\"text\":\"line\\n雪\",\"😀\":1,\"�\":0}]"
+    }
+  ],
+  "commands": [
+    {
+      "vector_id": "original",
+      "method": "POST",
+      "route": "/sessions",
+      "request": {
+        "config_ref": "log-analysis.yaml",
+        "user_prompt": "Explain the log"
+      },
+      "expected_sha256": "dd097073ec98a0ba88e3aa474bbeeef59b57f474a663b7c12dd4b1b71a87b4d9",
+      "canonical_request": "[\"agent-command-v1\",\"POST\",\"/sessions\",{\"config_ref\":\"log-analysis.yaml\",\"user_prompt\":\"Explain the log\"}]"
+    },
+    {
+      "vector_id": "retry_reordered",
+      "method": "POST",
+      "route": "/sessions",
+      "request": {
+        "user_prompt": "Explain the log",
+        "config_ref": "log-analysis.yaml"
+      },
+      "expected_sha256": "dd097073ec98a0ba88e3aa474bbeeef59b57f474a663b7c12dd4b1b71a87b4d9",
+      "canonical_request": "[\"agent-command-v1\",\"POST\",\"/sessions\",{\"config_ref\":\"log-analysis.yaml\",\"user_prompt\":\"Explain the log\"}]"
+    },
+    {
+      "vector_id": "changed_payload",
+      "method": "POST",
+      "route": "/sessions",
+      "request": {
+        "config_ref": "log-analysis.yaml",
+        "user_prompt": "Different goal"
+      },
+      "expected_sha256": "8aebf4752c0d7e2179d86d9281a0bfa766e7a0d8fae129d4db3145f4a21143c9",
+      "canonical_request": "[\"agent-command-v1\",\"POST\",\"/sessions\",{\"config_ref\":\"log-analysis.yaml\",\"user_prompt\":\"Different goal\"}]"
+    }
+  ]
+}

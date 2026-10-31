@@ -10,6 +10,7 @@ from typing import Any, Awaitable, Callable
 
 import psycopg
 from dotenv import load_dotenv
+from .recovery import IdempotentAdapter, Verification
 
 ROOT = Path(__file__).resolve().parents[3]
 IP = re.compile(r"^(?P<ip>(?:\d{1,3}\.){3}\d{1,3})\s+.*?\s(?P<status>\d{3})$")
@@ -222,8 +223,8 @@ TOOLS: dict[str, Tool] = {
 # These built-in tools only inspect fixture data or compute/validate results.
 # New tools default to reconciliation; registration alone never permits replay.
 READ_ONLY_TOOLS = frozenset(TOOLS)
-IDEMPOTENT_TOOLS: dict[str, Callable[[dict[str, Any], str], Awaitable[str]]] = {}
-RECONCILERS: dict[str, Callable[[dict[str, Any], str], Awaitable[str | None]]] = {}
+IDEMPOTENT_TOOLS: dict[str, IdempotentAdapter] = {}
+RECONCILERS: dict[str, Callable[[dict[str, Any], str], Awaitable[Verification]]] = {}
 
 
 def recovery_policy(declaration) -> dict[str, Any]:
@@ -245,3 +246,43 @@ async def execute(name: str, arguments: dict[str, Any]) -> str:
         if name not in READ_ONLY_TOOLS:
             raise  # A new effectful adapter may have acted before raising.
         return f"ERROR: {type(error).__name__}: {error}"
+
+
+async def fixture_idempotent_write(arguments, key):
+    """The receipt row is the controlled recipient's atomic effect and result."""
+    from .identity import canonical, payload_fingerprint
+    from .recovery import RecipientConflict
+    namespace = os.environ['AGENT_DEPLOYMENT_NAMESPACE']
+    fingerprint = payload_fingerprint('fixture_idempotent_write','fixture://action-receipts',arguments)
+    result = canonical({'effect_id':key,'value':arguments['value']}).decode()
+    async with await _connection() as connection:
+        await connection.execute('''INSERT INTO agent_fixture_action_receipts(namespace,idempotency_key,payload_sha256,request,result)
+            VALUES (%s,%s,%s,%s::jsonb,%s::jsonb) ON CONFLICT(namespace,idempotency_key) DO NOTHING''',
+            (namespace,key,fingerprint,canonical(arguments).decode(),result))
+        cursor = await connection.execute('SELECT payload_sha256,result FROM agent_fixture_action_receipts WHERE namespace=%s AND idempotency_key=%s FOR UPDATE',(namespace,key))
+        row = await cursor.fetchone()
+        if row[0] != fingerprint:
+            raise RecipientConflict('Recipient key already identifies a different payload')
+        return canonical(row[1]).decode()
+
+
+async def fixture_verify(arguments,key):
+    from .identity import canonical, payload_fingerprint
+    from .recovery import Verification
+    async with await _connection() as connection:
+        cursor = await connection.execute('SELECT payload_sha256,result FROM agent_fixture_action_receipts WHERE namespace=%s AND idempotency_key=%s',(os.environ['AGENT_DEPLOYMENT_NAMESPACE'],key))
+        row = await cursor.fetchone()
+    if row is None:
+        return Verification('unknown',{'source':'recipient-primary','key':key,'receipt_present':False})
+    if row[0] != payload_fingerprint('fixture_idempotent_write','fixture://action-receipts',arguments):
+        return Verification('unknown',{'source':'recipient-primary','key':key,'payload_mismatch':True})
+    return Verification('succeeded',{'source':'recipient-primary','key':key,'receipt_present':True},canonical(row[1]).decode(),key)
+
+
+async def _fixture_requires_key(_arguments):
+    raise ValueError('This adapter must be invoked through the durable execution coordinator')
+
+
+TOOLS['fixture_idempotent_write'] = _fixture_requires_key
+IDEMPOTENT_TOOLS['fixture_idempotent_write'] = IdempotentAdapter('fixture://action-receipts',fixture_idempotent_write,'deployment',None)
+RECONCILERS['fixture_idempotent_write'] = fixture_verify

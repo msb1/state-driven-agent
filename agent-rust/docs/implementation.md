@@ -1,66 +1,19 @@
-> Contract-1.1.0 port status: pending. The implementation described below is the earlier baseline, including its superseded compaction algorithm; it is not the upgraded Python design. Implement the [current upgrade specification](../../design_update.md), [observable contract](../../contract.md) and [shared tests](../../test-cases.md). The [frozen Python 1.0.0 baseline](../../archive/agent-python-cleanup-20261016/reference/python-1.0.0/README.md) is historical and predates the latest completion changes.
+# Integrated Rust contract 2.0.0 implementation
 
-# Tokio implementation
+The coordinated upgrade targets schema 6 and current Python behavior, including the applicable 1.1.0 workflow/configuration/context requirements and recent compaction changes. Production code has no fault-injection hooks, test callbacks, or test-specific branches. Startup never creates, alters, drops, or migrates database objects.
 
-See the shared [observable contract and conformance audit](../../contract.md) for current differences, qualification requirements, and the common Python HTTP test harness.
+## Verification
 
-Axum handlers are async and SQLx is Tokio-native. The current session/event tables implement the earlier whole-snapshot design and are not sufficient for Python's schema-5 repository or ownership guarantees. YAML is resolved only below the configured root and raw bytes are SHA-256 hashed at creation.
+Rust regressions cover fixed request/action identity vectors; JCS boundaries and strict JSON; Python-compatible integrity anchors and archives; configuration and request wire behavior; workflow/completion gates; context grouping, compaction normalization and pressure handling; stable diagnostic journals; checkpoint metadata acknowledgement; redacted provider diagnostics; and real socket completion/disconnect behavior. The deterministic 54-trial compaction workload remains part of the native suite.
 
-## Build and compile
+The obsolete schema-5 SQL regression is preserved as non-executable historical source in `contract-1.1.0-sql-regression.rs.txt`. It created a disposable schema and bypassed durable command admission, so it is not a schema-6 regression. Current live database qualification uses the unchanged shared `persist.sh` suite.
 
-The Rust crate lives in `agent-rust/` and has its own `Cargo.toml`, lockfile,
-and `rust-toolchain.toml`. The toolchain file selects Rust 1.97.1, which fixes
-a macOS linker alignment issue in Rust 1.97.0 that can prevent SQLx procedural
-macros from loading. Rustup selects this version automatically (and installs
-it if needed).
-
-From the repository root, the normal build-and-run command is:
+Run native regressions from the repository root:
 
 ```sh
-cd agent-rust
-cargo run
+cargo test --manifest-path agent-rust/Cargo.toml --offline -- --test-threads=1
+cargo check --manifest-path agent-rust/Cargo.toml --tests --offline
+cargo fmt --manifest-path agent-rust/Cargo.toml --check
 ```
 
-This uses the shared `config/` directory automatically and listens on port
-8000 by default. Use the [shared test guide's startup procedure](../../test-cases.md) for validation, including the root `.env` connection to the dedicated `universal_state` database. Do not rely on the earlier server's legacy-project fallback.
-
-For compile-only and build commands, run these from `agent-rust/`:
-
-```sh
-cd agent-rust
-cargo check
-cargo build
-```
-
-`cargo check` compiles the crate without producing an executable. `cargo build` creates the debug executable at `target/debug/agent-rust`. For an optimized release build, use:
-
-```sh
-cargo build --release
-```
-
-That creates `target/release/agent-rust`. The standard `cargo run` command
-uses the debug build; to explicitly run the optimized release build with the
-shared config directory:
-
-```sh
-cargo run --release
-```
-
-Optional formatting and lint checks, also run from `agent-rust/`:
-
-```sh
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-```
-
-## Runtime contract
-
-The Rust baseline implements eight earlier functional API routes: session create/read/message/run/resume, streamed run, config discovery, and health. The additional Python storage/recovery routes and extended state remain porting work. `/docs` uses Swagger UI and `/openapi.json` serves a checked-in schema snapshot generated from the Python FastAPI application. Refreshing that schema advertises a target interface; it does not implement its routes. From the repository root, the snapshot refresh command is:
-
-```sh
-uv run --project agent-python python -c 'import json; from agent_python.api import app; print(json.dumps(app.openapi(), indent=2))' > agent-rust/openapi.json
-```
-
-Rust uses PostgreSQL for session state and its event log. `AGENT_FIXTURE_DATABASE_URL` selects the database used by the deterministic tools; when unset it uses `AGENT_SESSION_DATABASE_URL`, matching Python's fallback. The OpenAI-compatible completion client supports bearer authentication, `/v1` and root route fallback, tool calls, workflow evidence, compaction, and hybrid reflection.
-
-The Rust implementation is intended to remain behaviorally interchangeable with Python. Changes to either implementation should be checked against the same config files, database fixtures, and model endpoint, especially for SSE timing, tool output strings, and compaction behavior.
+User-run `test-cases.sh`, `persist.sh`, and `aux-tests.sh` remain the final live validation. Native regression success and SQL planning checks do not establish that those live scripts passed. Follow the scripts' prompts for restart, the second Rust worker, and explicit pruning. See the Rust README for the administration commands.

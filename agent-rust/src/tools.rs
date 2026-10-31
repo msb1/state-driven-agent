@@ -1,12 +1,15 @@
 //! Deterministic PostgreSQL fixture tools. Tool failures become model context.
+use serde::de::{self, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Value, json};
 use sqlx::{PgPool, Row};
 use std::collections::HashMap;
+use std::fmt;
 
 pub fn is_supported(name: &str) -> bool {
     matches!(
         name,
-        "inspect_log"
+        "fixture_idempotent_write"
+            | "inspect_log"
             | "analyze_500_ips"
             | "validate_top_offending_ip"
             | "inspect_sql_schema"
@@ -18,6 +21,198 @@ pub fn is_supported(name: &str) -> bool {
             | "generate_employee_phase_3_report"
             | "validate_employee_audit"
     )
+}
+
+pub fn validate_arguments(schema: &Value, args: &Value) -> Result<(), String> {
+    validate_arguments_at(schema, args, "$")
+}
+
+pub fn validate_arguments_at(schema: &Value, args: &Value, path: &str) -> Result<(), String> {
+    validate_value(schema, args, path)
+}
+
+pub fn parse_strict_json(text: &str) -> Result<Value, String> {
+    let mut deserializer = serde_json::Deserializer::from_str(text);
+    let value = StrictValue::deserialize(&mut deserializer)
+        .map_err(|e| e.to_string())?
+        .0;
+    deserializer.end().map_err(|e| e.to_string())?;
+    Ok(value)
+}
+struct StrictValue(Value);
+impl<'de> Deserialize<'de> for StrictValue {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_any(StrictVisitor)
+    }
+}
+struct StrictVisitor;
+impl<'de> Visitor<'de> for StrictVisitor {
+    type Value = StrictValue;
+    fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str("strict JSON value")
+    }
+    fn visit_bool<E: de::Error>(self, v: bool) -> Result<Self::Value, E> {
+        Ok(StrictValue(Value::Bool(v)))
+    }
+    fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+        Ok(StrictValue(json!(v)))
+    }
+    fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+        if v > i64::MAX as u64 {
+            return Err(E::custom("JSON integer exceeds signed 64-bit range"));
+        }
+        Ok(StrictValue(json!(v)))
+    }
+    fn visit_f64<E: de::Error>(self, v: f64) -> Result<Self::Value, E> {
+        if !v.is_finite() {
+            return Err(E::custom("nonfinite JSON number"));
+        }
+        Ok(StrictValue(json!(v)))
+    }
+    fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+        Ok(StrictValue(Value::String(v.into())))
+    }
+    fn visit_string<E: de::Error>(self, v: String) -> Result<Self::Value, E> {
+        Ok(StrictValue(Value::String(v)))
+    }
+    fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+        Ok(StrictValue(Value::Null))
+    }
+    fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+        self.visit_unit()
+    }
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let mut out = Vec::new();
+        while let Some(v) = seq.next_element::<StrictValue>()? {
+            out.push(v.0);
+        }
+        Ok(StrictValue(Value::Array(out)))
+    }
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut out = Map::new();
+        while let Some(k) = map.next_key::<String>()? {
+            if out.contains_key(&k) {
+                return Err(de::Error::custom(format!("duplicate JSON property: {k}")));
+            }
+            let v = map.next_value::<StrictValue>()?;
+            out.insert(k, v.0);
+        }
+        Ok(StrictValue(Value::Object(out)))
+    }
+}
+fn validate_value(schema: &Value, value: &Value, path: &str) -> Result<(), String> {
+    let kind = schema.get("type").and_then(Value::as_str).unwrap_or("");
+    let valid = match kind {
+        "object" => value.is_object(),
+        "array" => value.is_array(),
+        "string" => value.is_string(),
+        "boolean" => value.is_boolean(),
+        "null" => value.is_null(),
+        "number" => value.as_f64().is_some_and(f64::is_finite),
+        "integer" => {
+            value.as_i64().is_some()
+                || value.as_u64().is_some()
+                || value
+                    .as_f64()
+                    .is_some_and(|n| n.is_finite() && n.fract() == 0.0)
+        }
+        _ => true,
+    };
+    if !valid {
+        return Err(format!("{path} must be {kind}"));
+    }
+    if let Some(allowed) = schema.get("enum").and_then(Value::as_array) {
+        if !allowed.contains(value) {
+            return Err(format!("{path} is not an allowed value"));
+        }
+    }
+    if schema.get("const").is_some_and(|x| x != value) {
+        return Err(format!("{path} must equal the configured constant"));
+    }
+    if let Some(obj) = value.as_object() {
+        if let Some(required) = schema.get("required").and_then(Value::as_array) {
+            for key in required.iter().filter_map(Value::as_str) {
+                if !obj.contains_key(key) {
+                    return Err(format!("{path}.{key} is required"));
+                }
+            }
+        }
+        let props = schema.get("properties").and_then(Value::as_object);
+        for (key, item) in obj {
+            if let Some(sub) = props.and_then(|p| p.get(key)) {
+                validate_value(sub, item, &format!("{path}.{key}"))?;
+            } else if schema.get("additionalProperties") == Some(&Value::Bool(false)) {
+                return Err(format!("{path}.{key} is not allowed"));
+            } else if let Some(additional_schema) =
+                schema.get("additionalProperties").filter(|v| v.is_object())
+            {
+                validate_value(additional_schema, item, &format!("{path}.{key}"))?;
+            }
+        }
+    }
+    if let Some(arr) = value.as_array() {
+        if let Some(item_schema) = schema.get("items") {
+            for (i, item) in arr.iter().enumerate() {
+                validate_value(item_schema, item, &format!("{path}[{i}]"))?;
+            }
+        }
+    }
+    if let Some(s) = value.as_str() {
+        if schema
+            .get("minLength")
+            .and_then(Value::as_u64)
+            .is_some_and(|n| s.chars().count() < n as usize)
+        {
+            return Err(format!("{path} is shorter than minLength"));
+        }
+        if schema
+            .get("maxLength")
+            .and_then(Value::as_u64)
+            .is_some_and(|n| s.chars().count() > n as usize)
+        {
+            return Err(format!("{path} exceeds maxLength"));
+        }
+        if let Some(pattern) = schema.get("pattern").and_then(Value::as_str) {
+            if !regex::Regex::new(pattern)
+                .map_err(|e| format!("invalid configured pattern: {e}"))?
+                .is_match(s)
+            {
+                return Err(format!("{path} does not match the configured pattern"));
+            }
+        }
+    }
+    if let Some(n) = value.as_f64() {
+        for key in ["minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"] {
+            if let Some(bound) = schema.get(key).and_then(Value::as_f64) {
+                let failed = match key {
+                    "minimum" => n < bound,
+                    "maximum" => n > bound,
+                    "exclusiveMinimum" => n <= bound,
+                    _ => n >= bound,
+                };
+                if failed {
+                    return Err(format!("{path} violates {key}"));
+                }
+            }
+        }
+    }
+    if let Some(arr) = value.as_array() {
+        if schema
+            .get("minItems")
+            .and_then(Value::as_u64)
+            .is_some_and(|n| arr.len() < (n as usize))
+        {
+            return Err(format!("{path} has fewer than minItems"));
+        }
+        if schema
+            .get("maxItems")
+            .and_then(Value::as_u64)
+            .is_some_and(|n| arr.len() > (n as usize))
+        {
+            return Err(format!("{path} exceeds maxItems"));
+        }
+    }
+    Ok(())
 }
 
 pub async fn execute(db: &PgPool, name: &str, args: Map<String, Value>) -> String {
@@ -404,7 +599,7 @@ pub fn python_json(value: &Value) -> String {
     match value {
         Value::Null => "null".into(),
         Value::Bool(x) => x.to_string(),
-        Value::Number(x) => x.to_string(),
+        Value::Number(x) => crate::identity::python_number(x),
         Value::String(x) => python_json_string(x),
         Value::Array(items) => format!(
             "[{}]",
@@ -421,95 +616,6 @@ pub fn python_json(value: &Value) -> String {
     }
 }
 
-/// Render values the way Python's `json.dumps` does for assistant tool arguments.
-/// Python defaults to ASCII escapes and inserts a space after separators.
-pub fn python_json_dumps(value: &Value) -> String {
-    match value {
-        Value::Null => "null".into(),
-        Value::Bool(value) => value.to_string(),
-        Value::Number(value) => value.to_string(),
-        Value::String(value) => json_string(value),
-        Value::Array(items) => format!(
-            "[{}]",
-            items.iter().map(python_json_dumps).collect::<Vec<_>>().join(", ")
-        ),
-        Value::Object(items) => format!(
-            "{{{}}}",
-            items
-                .iter()
-                .map(|(key, value)| format!("{}: {}", json_string(key), python_json_dumps(value)))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-    }
-}
-
-/// Approximate Python's `str()` representation for JSON-shaped history values.
-/// This is used only to build the reflection prompt's historical transcript.
-pub fn python_repr(value: &Value) -> String {
-    match value {
-        Value::Null => "None".into(),
-        Value::Bool(true) => "True".into(),
-        Value::Bool(false) => "False".into(),
-        Value::Number(value) => value.to_string(),
-        Value::String(value) => repr_string(value),
-        Value::Array(items) => format!(
-            "[{}]",
-            items.iter().map(python_repr).collect::<Vec<_>>().join(", ")
-        ),
-        Value::Object(items) => format!(
-            "{{{}}}",
-            items
-                .iter()
-                .map(|(key, value)| format!("{}: {}", repr_string(key), python_repr(value)))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-    }
-}
-
-fn json_string(value: &str) -> String {
-    let mut out = String::from("\"");
-    for ch in value.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\u{08}' => out.push_str("\\b"),
-            '\u{0c}' => out.push_str("\\f"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c < ' ' => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c if c as u32 > 0xffff => {
-                let code = c as u32 - 0x10000;
-                out.push_str(&format!("\\u{:04x}\\u{:04x}", 0xd800 + (code >> 10), 0xdc00 + (code & 0x3ff)));
-            }
-            c if c as u32 > 0x7f => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
-fn repr_string(value: &str) -> String {
-    let quote = if value.contains('\'') && !value.contains('"') { '"' } else { '\'' };
-    let mut out = String::new();
-    out.push(quote);
-    for ch in value.chars() {
-        match ch {
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c == quote => { out.push('\\'); out.push(c); }
-            c if c.is_control() => out.push_str(&format!("\\x{:02x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push(quote);
-    out
-}
 fn python_json_string(value: &str) -> String {
     let mut out = String::from("\"");
     for ch in value.chars() {
@@ -588,5 +694,83 @@ fn error(e: sqlx::Error) -> String {
         format!("OperationalError: {e}")
     } else {
         e.to_string()
+    }
+}
+
+#[cfg(test)]
+mod du01_validation_tests {
+    use super::*;
+    #[test]
+    fn du01_c04_strict_json_rejects_duplicate_and_nonfinite_values() {
+        for raw in [
+            r#"{"x":1,"x":2}"#,
+            r#"{"x":NaN}"#,
+            r#"{"x":1e999}"#,
+            r#"{"x":9223372036854775808}"#,
+        ] {
+            assert!(parse_strict_json(raw).is_err(), "accepted {raw}");
+        }
+        let value = parse_strict_json(r#"{"x":1.0}"#).unwrap();
+        let schema = json!({"type":"object","properties":{"x":{"type":"integer","minimum":1}},"required":["x"],"additionalProperties":false});
+        assert!(validate_arguments(&schema, &value).is_ok());
+    }
+    #[test]
+    fn du01_c04_type_and_boundary_matrix() {
+        let schema = json!({"type":"object","properties":{"enabled":{"type":"boolean"},"count":{"type":"integer","minimum":1,"maximum":3},"name":{"type":"string","minLength":2,"maxLength":4,"pattern":"^[A-Z]+$"}},"required":["enabled","count","name"],"additionalProperties":false});
+        for bad in [
+            json!({"enabled":"true","count":2,"name":"AB"}),
+            json!({"enabled":true,"count":true,"name":"AB"}),
+            json!({"enabled":true,"count":0,"name":"AB"}),
+            json!({"enabled":true,"count":2,"name":"aB"}),
+            json!({"enabled":true,"count":2,"name":"ABCDE"}),
+            json!({"enabled":true,"count":2,"name":"AB","extra":1}),
+        ] {
+            assert!(validate_arguments(&schema, &bad).is_err(), "accepted {bad}");
+        }
+        for good in [
+            json!({"enabled":false,"count":1,"name":"AB"}),
+            json!({"enabled":true,"count":2.0,"name":"XYZ"}),
+            json!({"enabled":true,"count":3,"name":"A"}),
+        ] {
+            let got = validate_arguments(&schema, &good);
+            if good["name"] == "A" {
+                assert!(got.is_err());
+            } else {
+                assert!(got.is_ok(), "rejected {good}: {got:?}");
+            }
+        }
+    }
+    #[test]
+    fn du01_c04_nested_array_object_enum_and_bounds_matrix() {
+        let schema = json!({"type":"object","properties":{"rows":{"type":"array","minItems":1,"items":{"type":"object","required":["n"],"properties":{"n":{"type":"integer","minimum":1,"maximum":5},"mode":{"type":"string","enum":["robust"]}}}}},"required":["rows"]});
+        assert!(validate_arguments(&schema, &json!({"rows":[{"n":2,"mode":"robust"}]})).is_ok());
+        for bad in [
+            json!({"rows":[]}),
+            json!({"rows":[{"n":true}]}),
+            json!({"rows":[{"n":6}]}),
+            json!({"rows":[{"n":2,"mode":"naive"}]}),
+        ] {
+            assert!(validate_arguments(&schema, &bad).is_err(), "accepted {bad}");
+        }
+    }
+    #[test]
+    fn du01_c04_shared_boundary_case_matches_go_matrix() {
+        let schema = json!({"type":"object","properties":{"mode":{"type":"string","enum":["safe","strict"]},"text":{"type":"string","minLength":2,"maxLength":4,"pattern":"^ok"},"items":{"type":"array","minItems":1,"maxItems":2,"items":{"type":"integer"}}},"required":["mode","text","items"],"additionalProperties":false});
+        let valid = parse_strict_json(r#"{"mode":"safe","text":"okay","items":[1,2.0]}"#).unwrap();
+        assert!(validate_arguments(&schema, &valid).is_ok());
+        let invalid =
+            parse_strict_json(r#"{"mode":"unsafe","text":"x","items":[true,2,3]}"#).unwrap();
+        assert!(validate_arguments(&schema, &invalid).is_err());
+        assert!(
+            validate_arguments(&schema, &json!([])).is_err(),
+            "non-object tool arguments must be rejected"
+        );
+    }
+    #[test]
+    fn du01_c04_config_schema_rejects_invalid_regex_and_accepts_annotation_keys() {
+        let invalid = json!({"type":"string","pattern":"["});
+        assert!(crate::validate_schema(&invalid, "test").is_err());
+        let valid = json!({"type":"string","title":"label","default":"x","examples":["x"]});
+        assert!(crate::validate_schema(&valid, "test").is_ok());
     }
 }

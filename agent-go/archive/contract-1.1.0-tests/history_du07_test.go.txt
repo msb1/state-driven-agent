@@ -15,23 +15,19 @@ import (
 
 func TestDU07C01DatabaseLeaseRaceExpiryAndStaleOwner(t *testing.T) {
 	s, ctx := du05Repository(t)
-	// Simulate an unversioned Go test schema. DU-07 performs one clean reset,
-	// then startup recreates the shared canonical tables. Repeated startup is safe.
+	// Validation must preserve existing sessions and never reset the schema.
 	legacy := du05Create(t, s, ctx)
-	if _, err := s.db.Exec(ctx, `UPDATE agent_go_schema_control SET version=0 WHERE component='agent-go'`); err != nil {
-		t.Fatal(err)
-	}
 	if err := s.schema(); err != nil {
-		t.Fatalf("reset and recreate canonical schema: %v", err)
+		t.Fatalf("validate canonical schema: %v", err)
 	}
 	var preserved bool
-	if err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM agent_sessions WHERE session_id=$1)`, legacy.State.ID).Scan(&preserved); err != nil || preserved {
-		t.Fatalf("legacy test rows were not cleared: preserved=%v err=%v", preserved, err)
+	if err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM agent_sessions WHERE session_id=$1)`, legacy.State.ID).Scan(&preserved); err != nil || !preserved {
+		t.Fatalf("schema validation did not preserve rows: preserved=%v err=%v", preserved, err)
 	}
 	for _, column := range []string{"tool", "arguments", "policy", "idempotency_key", "attempts", "owner", "fence", "started_at", "finished_at", "payload"} {
 		var exists bool
 		if err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='agent_tool_executions' AND column_name=$1)`, column).Scan(&exists); err != nil || !exists {
-			t.Fatalf("DU-07 execution column %q missing after migration: %v", column, err)
+			t.Fatalf("DU-07 execution column %q missing: %v", column, err)
 		}
 	}
 	for _, obsolete := range []string{"tool_name", "attempt_count", "owner_id"} {

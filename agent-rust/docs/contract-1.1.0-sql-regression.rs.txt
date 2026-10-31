@@ -1,0 +1,284 @@
+// Historical schema-5 diagnostic SQL regression. Retired from execution.
+// It creates a disposable schema and bypasses durable command admission.
+// Schema-6 live qualification is performed by the unchanged shared persist.sh.
+#[tokio::test]
+#[ignore = "requires AGENT_RUST_TEST_DATABASE_URL; creates and removes a disposable schema"]
+async fn postgres_diagnostic_checkpoint_replay_rollback_restart_and_paging() {
+    let url =
+        std::env::var("AGENT_RUST_TEST_DATABASE_URL").expect("set AGENT_RUST_TEST_DATABASE_URL");
+    let admin = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .unwrap();
+    let schema = format!("rust_diagnostics_{}", Uuid::new_v4().simple());
+    sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        .execute(&admin)
+        .await
+        .unwrap();
+    let schema_for_pool = schema.clone();
+    let pool = PgPoolOptions::new()
+        .max_connections(3)
+        .after_connect(move |connection, _| {
+            let sql = format!("SET search_path TO {schema_for_pool}");
+            Box::pin(async move {
+                sqlx::query(&sql).execute(connection).await?;
+                Ok(())
+            })
+        })
+        .connect(&url)
+        .await
+        .unwrap();
+    // Keep cleanup outside the assertions so a failure removes only this test's schema.
+    let result = tokio::spawn(postgres_checks(pool)).await;
+    sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        .execute(&admin)
+        .await
+        .unwrap();
+    admin.close().await;
+    result.unwrap();
+}
+
+async fn postgres_checks(pool: sqlx::PgPool) {
+    sqlx::raw_sql(include_str!("../../schema/postgres.sql"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let app = App {
+        db: pool.clone(),
+        fixtures: pool.clone(),
+        root: crate::repo_root().join("config"),
+        locks: Arc::new(Mutex::new(HashMap::new())),
+    };
+    let source: Value =
+        serde_yaml::from_str(include_str!("../../config/completion-no-workflow.yaml")).unwrap();
+    let config: Config = serde_json::from_value(source["agent"].clone()).unwrap();
+    let config_value = serde_json::to_value(&config).unwrap();
+    let hash = crate::resolved_config_hash(&config).unwrap().1;
+    let mut state = session();
+    state.resolved_config_sha256 = Some(hash);
+    state.append_message(Message {
+        role: "user".into(),
+        content: Some(state.goal.clone()),
+        ..Default::default()
+    });
+    save(&app, &mut state, &config_value, json!({"type":"created"}))
+        .await
+        .unwrap();
+    let id = Uuid::parse_str(&state.id).unwrap();
+
+    // Complete multiple checkpoints, crossing the recent-cache boundary.
+    for index in 1..=45 {
+        record(
+            &mut state,
+            FAMILIES[2],
+            json!({"step":index,"assessment":{"pressure_ratio":(index*100+4) as f64/31488.0}}),
+        )
+        .unwrap();
+        assert_eq!(state.diagnostics_pending.len(), 1);
+        save(
+            &app,
+            &mut state,
+            &config_value,
+            json!({"type":"checkpoint","step":index}),
+        )
+        .await
+        .unwrap();
+        assert!(state.diagnostics_pending.is_empty());
+    }
+    let saved_revision = state.revision;
+    let archived: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM agent_session_diagnostics WHERE session_id=$1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(archived, 45);
+    let hot: Value = sqlx::query_scalar("SELECT state FROM agent_sessions WHERE session_id=$1")
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert!(hot.get(FAMILIES[2]).is_none());
+
+    // Hydrate as a restarted worker, then continue without renumbering.
+    let (mut restored, _) = load(&app, &state.id).await.expect("restart hydration");
+    assert_eq!(restored.revision, saved_revision);
+    assert_eq!(restored.compaction_decisions.len(), RECENT);
+    assert_eq!(restored.compaction_decisions[0]["step"], 14);
+    // Preserve existing Rust sessions written before this journal change.
+    let mut legacy_hot = hot;
+    legacy_hot
+        .as_object_mut()
+        .unwrap()
+        .remove("diagnostic_counts");
+    legacy_hot["compaction_events"] = json!([]);
+    legacy_hot["compaction_attempts"] = json!([]);
+    let historical: Vec<Value> = sqlx::query_scalar("SELECT payload FROM agent_session_diagnostics WHERE session_id=$1 AND family=$2 ORDER BY ordinal")
+        .bind(id).bind(FAMILIES[2]).fetch_all(&pool).await.unwrap();
+    legacy_hot["compaction_decisions"] = json!(historical);
+    sqlx::query("UPDATE agent_sessions SET state=$2 WHERE session_id=$1")
+        .bind(id)
+        .bind(legacy_hot)
+        .execute(&pool)
+        .await
+        .unwrap();
+    restored = load(&app, &state.id)
+        .await
+        .expect("old Rust snapshot hydration")
+        .0;
+    assert_eq!(restored.compaction_decisions.len(), RECENT);
+    assert_eq!(restored.diagnostic_counts[FAMILIES[2]], 45);
+    assert!(restored.diagnostics_pending.is_empty());
+
+    record(
+        &mut restored,
+        FAMILIES[2],
+        json!({"step":46,"assessment":{"pressure_ratio":15700.0/31488.0}}),
+    )
+    .unwrap();
+    let pending = restored.diagnostics_pending[0].clone();
+    save(
+        &app,
+        &mut restored,
+        &config_value,
+        json!({"type":"continued"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(restored.diagnostic_counts[FAMILIES[2]], 46);
+
+    // Exact record replay is idempotent; a changed payload rolls back the
+    // whole session aggregate, without acknowledging the outbox/revision.
+    restored.diagnostics_pending.push(pending.clone());
+    save(
+        &app,
+        &mut restored,
+        &config_value,
+        json!({"type":"exact_replay"}),
+    )
+    .await
+    .unwrap();
+    let before: (Value,i64,i64) = sqlx::query_as("SELECT state,revision,(SELECT COUNT(*) FROM agent_session_events WHERE session_id=$1) FROM agent_sessions WHERE session_id=$1").bind(id).fetch_one(&pool).await.unwrap();
+    let before_transcript: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM agent_session_transcript WHERE session_id=$1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let mut conflict = restored.clone();
+    record(
+        &mut conflict,
+        FAMILIES[2],
+        json!({"step":47,"reason":"must roll back"}),
+    )
+    .unwrap();
+    let mut changed = pending.clone();
+    changed.payload["step"] = json!(999);
+    conflict.diagnostics_pending.push(changed);
+    let err = save(
+        &app,
+        &mut conflict,
+        &config_value,
+        json!({"type":"must_roll_back"}),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    assert!(
+        err.contains("family=compaction_decisions ordinal=46"),
+        "{err}"
+    );
+    assert_eq!(conflict.revision, restored.revision);
+    assert_eq!(conflict.diagnostics_pending.len(), 2);
+    assert!(conflict.pending_commit_id.is_some());
+    let after: (Value,i64,i64) = sqlx::query_as("SELECT state,revision,(SELECT COUNT(*) FROM agent_session_events WHERE session_id=$1) FROM agent_sessions WHERE session_id=$1").bind(id).fetch_one(&pool).await.unwrap();
+    let after_transcript: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM agent_session_transcript WHERE session_id=$1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(after, before);
+    assert_eq!(after_transcript, before_transcript);
+    let after_diagnostics: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM agent_session_diagnostics WHERE session_id=$1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        after_diagnostics, 46,
+        "the new pending diagnostic must also roll back"
+    );
+
+    // Counts cannot be advanced independently of archived records.
+    let mut bad_count = restored.clone();
+    bad_count.diagnostic_counts.insert(FAMILIES[2].into(), 47);
+    assert!(
+        save(
+            &app,
+            &mut bad_count,
+            &config_value,
+            json!({"type":"bad_count"})
+        )
+        .await
+        .unwrap_err()
+        .to_string()
+        .contains("counter differs")
+    );
+
+    // A lost commit acknowledgement retries the identical diagnostic
+    // identity/content, without duplicating the event or transcript.
+    record(&mut restored, FAMILIES[2], json!({"step":47})).unwrap();
+    restored.pending_commit_id = Some(Uuid::new_v4().to_string());
+    let mut committed = restored.clone();
+    let event = json!({"type":"lost_ack"});
+    crate::save_inner(&app, &mut committed, &config_value, event.clone())
+        .await
+        .unwrap();
+    save(&app, &mut restored, &config_value, event)
+        .await
+        .unwrap();
+    assert_eq!(restored.revision, committed.revision);
+    assert!(restored.diagnostics_pending.is_empty());
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM agent_session_diagnostics WHERE session_id=$1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(count, 47);
+
+    // Public history paging comes from the archive, including ordinals
+    // older than the 32-record active cache, with a stable through bound.
+    use axum::response::IntoResponse;
+    let response = crate::compaction_diagnostics(
+        axum::extract::State(app.clone()),
+        axum::extract::Path((state.id.clone(), FAMILIES[2].into())),
+        axum::extract::Query(HashMap::from([
+            ("limit".into(), "2".into()),
+            ("after".into(), "0".into()),
+            ("through".into(), "45".into()),
+        ])),
+    )
+    .await
+    .into_response();
+    assert_eq!(response.status(), axum::http::StatusCode::OK);
+    let page: Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(page["total_recorded"], 47);
+    assert_eq!(page["through"], 45);
+    assert_eq!(page["entries"][0]["ordinal"], 1);
+    assert_eq!(page["entries"][1]["ordinal"], 2);
+    assert_eq!(page["next_after"], 2);
+    println!(
+        "PostgreSQL diagnostic regression passed: 47 archived records, 32-record cache, revision={}, exact replay, conflict rollback, lost acknowledgement, old snapshot hydration, stable paging",
+        restored.revision
+    );
+    pool.close().await;
+}

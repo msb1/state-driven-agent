@@ -206,11 +206,11 @@ A final answer requires a nonempty valid response, completed configured workflow
 
 Before a validated tool executes, the coordinator commits intent and a started-attempt marker. A returned result is committed atomically with the correlated result message, evidence and state. Recovery uses durable identities and a stable idempotency key. Read-only/repeatable adapters may retry within policy; idempotent tools need an actual idempotent adapter; uncertain outcomes requiring reconciliation block instead of being blindly replayed. Cancellation is cooperative at scheduling boundaries, preserves known results, and does not undo effects or promise external exactly-once execution.
 
-Runs have separate durable identities/status. `/cancel`, JSON-request disconnect and SSE disconnect request cancellation. Explicit `/resume` starts a new run/fence while preserving the goal/config/transcript. Startup marks abandoned runs for explicit recovery without executing tools/models. A session-scoped PostgreSQL advisory guard spans DDL commit and recovery, preventing concurrent worker DDL/read deadlocks. Current-schema checks avoid repeated DDL. The initializer includes legacy import logic, but the dedicated fresh `universal_state` database needs no legacy-project migration.
+Runs have separate durable identities/status. `/cancel`, JSON-request disconnect and SSE disconnect request cancellation. Explicit `/resume` starts a new run/fence while preserving the goal/config/transcript. Startup marks abandoned runs for explicit recovery without executing tools/models. Server startup validates the shared schema in a read-only transaction. Schema creation occurs only through the explicit initializer; automatic schema migration and legacy-session imports are disabled.
 
 ## PostgreSQL schema 5 and hydration
 
-See [schema.sql](../../archive/agent-python-cleanup-20261016/reference/python-1.0.0/schema.sql) for the source-derived DDL snapshot; production setup uses the runtime initializer, not a second hand-maintained DDL installer.
+The canonical definitions are [postgres.sql](../../schema/postgres.sql) and [fixtures.sql](../../schema/fixtures.sql). The explicit `scripts/initialize_database.py` command creates the complete shared schema. All servers use the same [read-only validation query](../../schema/validate.sql) and never change the schema.
 
 | Table | Contents |
 | --- | --- |
@@ -223,7 +223,6 @@ See [schema.sql](../../archive/agent-python-cleanup-20261016/reference/python-1.
 | `agent_session_diagnostics` | Append-only diagnostic family/ordinal/payload rows |
 | `agent_session_calls` | Normalized historical call lookup |
 | `agent_archive_receipts` | Verified telemetry archive/dependency receipts |
-| `agent_schema_migrations` | Applied component/storage versions |
 
 Ordinary reads use one MVCC SQL statement to hydrate hot state, resolved configuration, active goal/raw messages, current ledger and recent diagnostics consistently at one revision. Historical transcript and diagnostics are explicit/paginated reads. The active prompt is not an `is_compacted=false` message-table query. Compaction does not delete or mass-flag history; it atomically replaces context references while preserving source rows/provenance.
 

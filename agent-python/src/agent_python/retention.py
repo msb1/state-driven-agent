@@ -13,7 +13,8 @@ TABLES = {
     'agent_session_transcript':'sequence','agent_session_events':'event_id',
     'agent_session_diagnostics':'family,ordinal','agent_runs':'started_at,run_id',
     'agent_tool_executions':'execution_id','agent_session_calls':'call_id,message_id',
-    'agent_archive_receipts':'archive_id'}
+    'agent_archive_receipts':'archive_id','agent_commands':'created_at,command_id',
+    'agent_commit_receipts':'committed_revision','agent_action_attempts':'execution_id,attempt_number'}
 
 
 def line(value):
@@ -27,7 +28,7 @@ def verify_archive(path):
     counts = {name:0 for name in TABLES}
     with Path(path).open('rb') as stream:
         header = json.loads(next(stream,b''))
-        if header.get('format')!='sda-archive-1':
+        if header.get('format')!='sda-archive-2':
             raise ValueError('Unsupported archive format')
         UUID(header['archive_id']); UUID(header['session_id'])
         if set(header)!={'format','archive_id','session_id','snapshot_revision'} or type(header['snapshot_revision']) is not int or header['snapshot_revision']<1:
@@ -74,7 +75,7 @@ class RetentionStorage:
                     row = await cursor.fetchone()
                     if row is None:
                         raise ValueError('Unknown session')
-                    header = {'format':'sda-archive-1','archive_id':str(uuid4()),'session_id':session_id,'snapshot_revision':row[0]}
+                    header = {'format':'sda-archive-2','archive_id':str(uuid4()),'session_id':session_id,'snapshot_revision':row[0]}
                     digest = hashlib.sha256(); hashes={k:hashlib.sha256() for k in TABLES};counts={k:0 for k in TABLES}
                     watermarks={'events':0,'diagnostics':{}}
                     data=line(header);stream.write(data);digest.update(data)
@@ -104,7 +105,7 @@ class RetentionStorage:
             raise ValueError('Unknown session')
         state=persisted.state
         async with await psycopg.AsyncConnection.connect(self.database_url) as conn:
-            cursor=await conn.execute("SELECT count(*) FROM agent_tool_executions WHERE session_id=%s AND status IN ('pending','started','uncertain')",(session_id,))
+            cursor=await conn.execute("SELECT count(*) FROM agent_tool_executions WHERE session_id=%s AND status IN ('pending','started','uncertain','blocked')",(session_id,))
             unresolved=(await cursor.fetchone())[0]
             cursor=await conn.execute("SELECT count(*) FROM agent_runs WHERE session_id=%s AND status='running'",(session_id,))
             running=(await cursor.fetchone())[0]
@@ -112,7 +113,8 @@ class RetentionStorage:
             'eligible':state.status!='active' and state.run_status!='running' and not state.pending_tool_calls and unresolved==0 and running==0,
             'unresolved_executions':unresolved,'running_lifecycles':running,'keep_diagnostics':keep_diagnostics,'keep_events':keep_events,
             'protected_tables':['agent_sessions','agent_session_context','agent_session_transcript',
-                'agent_session_calls','agent_runs','agent_tool_executions','agent_archive_receipts'],
+                'agent_session_calls','agent_runs','agent_tool_executions','agent_archive_receipts',
+                'agent_commands','agent_commit_receipts','agent_action_attempts'],
             'prunable_tables':['agent_session_events','agent_session_diagnostics'],
             'requires':'Verified fresh export, terminal session, ownership/fencing, matching revision and database digests'}
 
@@ -133,17 +135,20 @@ class RetentionStorage:
             if verify_archive(receipt['archive_path'])['sha256']!=checksum:
                 raise ValueError('A prior archive dependency is unavailable or corrupt')
         persisted=await self.get(session_id)
-        async with ExecutionCoordinator(self,persisted.state,persisted.config,lease_seconds=300) as execution:
-            persisted=await self.get(session_id)
-            state=persisted.state
-            state.execution_owner,state.execution_fence=execution.owner,execution.fence
-            state.execution_maintenance=True
-            execution.state=state
-            if state.revision!=manifest['snapshot_revision']:
-                raise ValueError('Stale archive; export the current revision again')
-            state.last_archive_id=manifest['archive_id']
-            state.retention_pending={**manifest,'keep_diagnostics':keep_diagnostics,'keep_events':keep_events}
-            await self.save(state,persisted.config,{'type':'telemetry_archived','archive_id':manifest['archive_id']})
+        from .commands import administrative_command
+        async with administrative_command(self,'/admin/retention/prune',{'session_id':session_id,'archive_id':manifest['archive_id']}) as command:
+            command.response_message = 'Telemetry archived.'
+            async with ExecutionCoordinator(self,persisted.state,persisted.config,lease_seconds=300) as execution:
+                persisted=await self.get(session_id)
+                state=persisted.state
+                state.execution_owner,state.execution_fence=execution.owner,execution.fence
+                state.execution_maintenance=True
+                execution.state=state
+                if state.revision!=manifest['snapshot_revision']:
+                    raise ValueError('Stale archive; export the current revision again')
+                state.last_archive_id=manifest['archive_id']
+                state.retention_pending={**manifest,'keep_diagnostics':keep_diagnostics,'keep_events':keep_events}
+                await self.save(state,persisted.config,{'type':'telemetry_archived','archive_id':manifest['archive_id']})
         return {'session_id':session_id,'revision':state.revision,'archive_id':manifest['archive_id']}
 
     async def _write_retention(self,cursor,state):
@@ -151,7 +156,7 @@ class RetentionStorage:
         if (state.execution_owner is None or state.status=='active' or state.pending_tool_calls
                 or item['snapshot_revision']!=state.revision-1 or item['keep_diagnostics']<RECENT or item['keep_events']<1):
             raise ValueError('Retention requires a terminal owned session and matching exported revision')
-        await cursor.execute("SELECT count(*) FROM agent_tool_executions WHERE session_id=%s AND status IN ('pending','started','uncertain')",(state.id,))
+        await cursor.execute("SELECT count(*) FROM agent_tool_executions WHERE session_id=%s AND status IN ('pending','started','uncertain','blocked')",(state.id,))
         if (await cursor.fetchone())[0]:
             raise ValueError('Unresolved execution prevents pruning')
         await cursor.execute("SELECT count(*) FROM agent_runs WHERE session_id=%s AND status='running'",(state.id,))

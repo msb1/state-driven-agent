@@ -14,7 +14,7 @@ from .config import AgentConfig
 from .models import Message
 from .validation import strict_json
 from .context import require_budget, source_text
-from .model_errors import ModelServiceError, classify_exchange, exception_diagnostic
+from .model_errors import ModelServiceError, classify_exchange, exception_diagnostic, log_provider_failure
 
 
 class LlmClient:
@@ -85,18 +85,32 @@ class LlmClient:
 
     def compaction_payload(self, goal, historical, existing, hybrid_reflection=True):
         if hybrid_reflection:
-            structure = "<COMPACTED_STATE><USER_GOAL>...</USER_GOAL><GLOBAL_LESSON_LEDGER>...</GLOBAL_LESSON_LEDGER><DEAD_ENDS>...</DEAD_ENDS><CURRENT_LOCAL_PIVOT>...</CURRENT_LOCAL_PIVOT></COMPACTED_STATE>"
+            from xml.sax.saxutils import escape
+            structure = (
+                "Return one XML document with root COMPACTED_STATE and exactly four text-only child elements, "
+                "in this order: USER_GOAL, GLOBAL_LESSON_LEDGER, DEAD_ENDS, CURRENT_LOCAL_PIVOT. "
+                "Use this complete first child verbatim: <USER_GOAL>" + escape(goal.strip()) + "</USER_GOAL>. "
+                "Write concise source-grounded lessons in GLOBAL_LESSON_LEDGER, failed approaches in DEAD_ENDS, "
+                "and a provisional next direction in CURRENT_LOCAL_PIVOT. Close every element and the root "
+                "with its matching closing tag. Escape XML special characters in section text. "
+                "Do not emit Markdown fences, tool calls, JSON messages, nested elements, or placeholder text.")
         else:
-            structure = "- Core Objective:\n...\n- Universal Truths Discovered:\n...\n- Dead Ends:\n...\n- Current Local Pivot:\n..."
+            structure = (
+                "Return exactly four ordered headings: '- Core Objective:', '- Universal Truths Discovered:', "
+                "'- Dead Ends:', '- Current Local Pivot:'. Put the original goal verbatim below the first heading, "
+                "then source-grounded lessons, failed approaches, and a provisional next direction below the others. "
+                "Do not emit placeholder text or tool calls.")
         prompt = ("Summarize only the supplied historical prefix and previous ledger. Copy the original goal exactly. "
                   "Do not reconstruct recent raw messages. Carry forward prior useful lessons and dead ends. "
                   "Keep provisional hypotheses separate from observations; do not present guesses as verified facts. "
                   "Use only numbers appearing in the source. Do not calculate or invent statistics. "
                   "Fill every section, using '- None.' if empty. No prose outside the structure. "
                   "Escape XML special characters when using the XML format. "
-                  f"Keep output short, within {self.config.memory.max_summary_tokens} UTF-8 bytes. Return exactly: " + structure)
+                  f"Keep output short, within {self.config.memory.max_summary_tokens} UTF-8 bytes. " + structure)
         if self.compaction_feedback:
-            prompt += " Previous replacement rejected: " + self.compaction_feedback
+            prompt += (" Previous replacement rejected: " + self.compaction_feedback +
+                       ". Generate a complete corrected replacement from the source. Preserve the full original goal; "
+                       "replace every placeholder with source-grounded text or '- None.' and check all closing tags.")
         return {"model": self.config.model, "messages": [{"role": "system", "content": prompt},
                 {"role": "user", "content": source_text(goal, historical, existing)}], "temperature": 0,
                 "max_tokens": self.config.memory.summary_output_tokens}
@@ -179,6 +193,7 @@ class LlmClient:
                                                  "http_status": response.status_code, "failure": failure})
                 if response.status_code != httpx.codes.NOT_FOUND or url == urls[-1]:
                     if failure:
+                        log_provider_failure(response.status_code, body, response.headers.get('x-request-id'))
                         failure["details"] = {**failure["details"], "request": metadata, "elapsed_seconds": time.monotonic() - started}
                         raise ModelServiceError(**failure)
                     if body is None:

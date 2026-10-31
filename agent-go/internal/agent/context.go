@@ -194,7 +194,7 @@ func sourceText(goal string, historical []Message, previous *string) (string, er
 	for i, message := range historical {
 		wire[i] = messageWireMap(message)
 	}
-	return "Goal: " + goal + "\nPrevious ledger: " + prev + "\nHistorical prefix:\n" + pythonStyleJSON(wire), nil
+	return "Goal: " + goal + "\nPrevious ledger: " + prev + "\nHistorical prefix:\n" + pythonStyleJSON(wire, false), nil
 }
 
 func ledgerNumberSet(text string) map[string]bool {
@@ -275,71 +275,86 @@ func validateLedger(proposal, goal, source string, maxBytes int, hybrid bool) (L
 	if len([]byte(proposal)) > maxBytes {
 		return Ledger{}, "", fmt.Errorf("summary exceeds ledger budget")
 	}
+	proposal = strings.TrimSpace(proposal)
+	if match := regexp.MustCompile("(?is)^```(?:xml|text)?[ \t]*\\r?\\n(.*?)\\r?\\n```$").FindStringSubmatch(proposal); match != nil {
+		proposal = strings.TrimSpace(match[1])
+	}
 	if hybrid {
 		if strings.Contains(proposal, "<!") || strings.Contains(proposal, "<?") {
 			return Ledger{}, "", fmt.Errorf("XML declarations, entities, and comments are forbidden")
 		}
-		decoder := xml.NewDecoder(strings.NewReader(strings.TrimSpace(proposal)))
-		decoder.Strict = true
-		rootSeen, rootDone := false, false
+		decoder := xml.NewDecoder(strings.NewReader(proposal))
 		want := []string{"USER_GOAL", "GLOBAL_LESSON_LEDGER", "DEAD_ENDS", "CURRENT_LOCAL_PIVOT"}
-		sectionIndex := -1
-		var texts []strings.Builder
-		stack := []string{}
+		texts := map[string]*strings.Builder{}
+		depth, active, done := 0, "", false
 		for {
-			tok, err := decoder.Token()
+			token, err := decoder.Token()
 			if err != nil {
 				if err.Error() == "EOF" {
 					break
 				}
 				return Ledger{}, "", fmt.Errorf("summary XML is malformed")
 			}
-			switch t := tok.(type) {
+			switch t := token.(type) {
 			case xml.StartElement:
-				if !rootSeen {
-					if t.Name.Local != "COMPACTED_STATE" || t.Name.Space != "" || len(t.Attr) != 0 {
-						return Ledger{}, "", fmt.Errorf("summary root must be COMPACTED_STATE without attributes")
-					}
-					rootSeen = true
-					stack = append(stack, t.Name.Local)
-					continue
+				if done || t.Name.Space != "" || len(t.Attr) != 0 {
+					return Ledger{}, "", fmt.Errorf("unsupported summary markup")
 				}
-				if rootDone || len(stack) != 1 || sectionIndex+1 >= len(want) || t.Name.Local != want[sectionIndex+1] || t.Name.Space != "" || len(t.Attr) != 0 {
-					return Ledger{}, "", fmt.Errorf("summary sections must be exact, ordered, and attribute-free")
-				}
-				sectionIndex++
-				texts = append(texts, strings.Builder{})
-				stack = append(stack, t.Name.Local)
-			case xml.CharData:
-				if !rootSeen || rootDone {
-					if strings.TrimSpace(string(t)) != "" {
-						return Ledger{}, "", fmt.Errorf("extra prose outside summary root")
+				if depth == 0 {
+					if t.Name.Local != "COMPACTED_STATE" {
+						return Ledger{}, "", fmt.Errorf("invalid summary root")
 					}
-				} else if sectionIndex < 0 {
-					if strings.TrimSpace(string(t)) != "" {
-						return Ledger{}, "", fmt.Errorf("extra content inside summary root")
+				} else if depth == 1 {
+					valid := false
+					for _, name := range want {
+						if name == t.Name.Local {
+							valid = true
+						}
 					}
+					if !valid || texts[t.Name.Local] != nil {
+						return Ledger{}, "", fmt.Errorf("missing or duplicate summary section")
+					}
+					active = t.Name.Local
+					texts[active] = &strings.Builder{}
 				} else {
-					texts[sectionIndex].Write([]byte(t))
+					texts[active].WriteString("\n")
 				}
+				depth++
 			case xml.EndElement:
-				if len(stack) == 0 || stack[len(stack)-1] != t.Name.Local || t.Name.Space != "" {
-					return Ledger{}, "", fmt.Errorf("summary XML nesting is invalid")
+				if depth > 2 {
+					texts[active].WriteString("\n")
 				}
-				stack = stack[:len(stack)-1]
-				if t.Name.Local == "COMPACTED_STATE" {
-					rootDone = true
+				depth--
+				if depth == 1 {
+					active = ""
 				}
-			case xml.Comment, xml.Directive, xml.ProcInst:
-				return Ledger{}, "", fmt.Errorf("comments, directives, and processing instructions are forbidden")
+				if depth == 0 {
+					done = true
+				}
+			case xml.CharData:
+				if active != "" {
+					texts[active].Write([]byte(t))
+				} else if strings.TrimSpace(string(t)) != "" {
+					return Ledger{}, "", fmt.Errorf("text outside summary sections")
+				}
+			default:
+				return Ledger{}, "", fmt.Errorf("unsupported summary markup")
 			}
 		}
-		if !rootSeen || !rootDone || len(stack) != 0 || sectionIndex != len(want)-1 {
-			return Ledger{}, "", fmt.Errorf("summary must contain exactly four ordered sections")
+		if !done || depth != 0 || len(texts) != 4 {
+			return Ledger{}, "", fmt.Errorf("incomplete summary")
 		}
-		sections = make([]string, len(texts))
-		for i := range texts {
-			sections[i] = strings.TrimSpace(texts[i].String())
+		for _, name := range want {
+			if texts[name] == nil {
+				return Ledger{}, "", fmt.Errorf("missing summary section")
+			}
+			lines := []string{}
+			for _, line := range strings.Split(texts[name].String(), "\n") {
+				if line = strings.TrimSpace(line); line != "" {
+					lines = append(lines, line)
+				}
+			}
+			sections = append(sections, strings.Join(lines, "\n"))
 		}
 	} else {
 		names := []string{"Core Objective", "Universal Truths Discovered", "Dead Ends", "Current Local Pivot"}
@@ -359,11 +374,12 @@ func validateLedger(proposal, goal, source string, maxBytes int, hybrid bool) (L
 			sections = append(sections, strings.TrimSpace(proposal[m[1]:end]))
 		}
 	}
-	if len(sections) != 4 || sections[0] != strings.TrimSpace(goal) {
+	if len(sections) != 4 {
 		return Ledger{}, "", fmt.Errorf("summary must preserve the original goal exactly")
 	}
+	sections[0] = strings.TrimSpace(goal)
 	for _, section := range sections {
-		if section == "" {
+		if section == "" || section == "..." || section == "…" {
 			return Ledger{}, "", fmt.Errorf("all summary sections must be populated")
 		}
 	}
@@ -392,9 +408,9 @@ func renderLedger(l Ledger, hybrid bool) string {
 		dead = "- None."
 	}
 	if hybrid {
-		return "<COMPACTED_STATE>\n<USER_GOAL>\n" + xmlEscape(strings.TrimSpace(l.Goal)) + "\n</USER_GOAL>\n<GLOBAL_LESSON_LEDGER>\n" + xmlEscape(claims) + "\n</GLOBAL_LESSON_LEDGER>\n<DEAD_ENDS>\n" + xmlEscape(dead) + "\n</DEAD_ENDS>\n<CURRENT_LOCAL_PIVOT>\n" + xmlEscape(l.Hypothesis) + "\n</CURRENT_LOCAL_PIVOT>\n</COMPACTED_STATE>"
+		return "<COMPACTED_STATE><USER_GOAL>\n" + xmlEscape(l.Goal) + "\n</USER_GOAL><GLOBAL_LESSON_LEDGER>\n" + xmlEscape(claims) + "\n</GLOBAL_LESSON_LEDGER><DEAD_ENDS>\n" + xmlEscape(dead) + "\n</DEAD_ENDS><CURRENT_LOCAL_PIVOT>\n" + xmlEscape(l.Hypothesis) + "\n</CURRENT_LOCAL_PIVOT></COMPACTED_STATE>"
 	}
-	return "- Core Objective:\n" + strings.TrimSpace(l.Goal) + "\n- Universal Truths Discovered:\n" + claims + "\n- Dead Ends:\n" + dead + "\n- Current Local Pivot:\n" + l.Hypothesis
+	return "- Core Objective:\n" + l.Goal + "\n- Universal Truths Discovered:\n" + claims + "\n- Dead Ends:\n" + dead + "\n- Current Local Pivot:\n" + l.Hypothesis
 }
 
 func xmlEscape(s string) string {
