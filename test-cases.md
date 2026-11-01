@@ -8,6 +8,8 @@ The required API includes health/config discovery, session create/read/append/ru
 
 These are live end-to-end tests. A passing test means the selected server completed that scenario against its configured model service and PostgreSQL fixtures. Results can vary with model/provider behavior; keep failed output and investigate it rather than rerunning until it passes. The suite exercises public API behavior and durable history; SQL transaction/fencing and process crash-injection still require their dedicated integration checks.
 
+**Contract 2.0 note:** The manual curl examples in sections 4–16 below have not all been updated for contract 2.0. Mutating requests require a retained `Idempotency-Key`, and cancellation requires the target `run_id`; the unkeyed examples and cancellation request as written cannot qualify a 2.0 server. Use the current keyed `test-cases.sh` and `aux-tests.sh` runners and the 2.0 persistence suite in section 19 for 2.0 qualification. The scenarios and assertions below explain the intended behavior; do not interpret a 422 from an unkeyed example as a failure of the business scenario.
+
 The six profile tests below are six separate session executions, one for each YAML file. Run every one in order for each implementation. Keep the same curl terminal open for sections 3–16 so shell variables such as `AGENT_URL`, `OUT`, and `C1`–`C6` remain set. Copy each complete command block, including its `jq -e` assertions. A case passes only when the curl request succeeds and every assertion exits with code 0; an SSE stream ending by itself does not prove success.
 
 ## 1. Prerequisites
@@ -141,6 +143,10 @@ For each numbered case below, run the commands in order. The create request save
 
 **Goal:** Robustly analyze the fixture and identify the most frequent HTTP 500 IP. The successful response must include `10.0.0.5` and `83`, and the session must finish with `status=complete`.
 
+**Problem and agent value:** An operator investigating server failures needs a reliable ranking even when access logs contain malformed lines. The agent can inspect the data, choose a robust parsing function, and have a separate validator check the proposed result. The workflow makes the validation result a condition for completion instead of relying on a plausible model answer.
+
+**What this test exercises:** A new session runs the profile against fixture-backed tools; the assertions inspect the persisted calls, arguments, tool outputs, final answer, and task/run status. They require inspection, `robust_parser: true`, the expected IP and count, and a positive validator result. This demonstrates a bounded inspect–analyze–validate workflow on this fixture; it does not establish accuracy on arbitrary logs.
+
 ```sh
 curl -fsS -H 'Content-Type: application/json' \
   -d '{"config_ref":"log-analysis.yaml","user_prompt":"Inspect and robustly analyze the HTTP access log. Validate the most frequent HTTP 500 IP and its count. In your final answer, state the IP and count."}' \
@@ -169,6 +175,10 @@ jq -e '
 ## 5. Test 2 — normalized Chicago revenue (`revenue-analysis.yaml`)
 
 **Goal:** Calculate and validate normalized Chicago Q1 2026 revenue. The final response must include the value `271017.77`, either as `271017.77` or formatted as `$271,017.77`, and the session must finish with `status=complete`.
+
+**Problem and agent value:** Inconsistent city casing and foreign keys can cause a financial query to omit or misjoin records. The agent can inspect the schema, select the normalization options, calculate the total, and use a separate tool to validate it. Recorded arguments and outputs make the route to the answer inspectable.
+
+**What this test exercises:** The commands create and run a session, then assert that schema inspection occurred, both normalization flags were enabled, the query returned the fixture total, and the validator received that total and returned `valid: true`. Completion and the answer are checked as well. The case tests tool orchestration and evidence-gated completion with known data; it does not audit a production database or establish general accounting correctness.
 
 ```sh
 curl -fsS -H 'Content-Type: application/json' \
@@ -200,6 +210,10 @@ This expected value assumes the canonical generated fixture rows. It is not an o
 ## 6. Test 3 — employee audit (`employee-audit.yaml`)
 
 **Goal:** Complete the corruption audit, valid New York salary median, and city report. Require the final answer to begin with `Phase 3`, contain all four city rows, and report median salary `92500`.
+
+**Problem and agent value:** An employee dataset contains malformed fields, invalid salaries and ages, and inconsistent city names. A useful report depends on detecting corruption, calculating a statistic from valid records, and producing a cleaned summary in the right order. The agent's phased workflow can retain evidence across those dependent operations, restrict the tools available in each phase, and bind later validation and final deliverables to actual results.
+
+**What this test exercises:** The run must finish with all three named phases completed, and the final answer must match the expected four fixture rows, salary, and opening line. This tests the observable end-to-end result and workflow state for a multi-phase task. These particular assertions do not independently inspect every intermediate call or prove all possible premature-answer and argument-binding rejection paths; use the durable transcript and dedicated contract checks for deeper investigation.
 
 ```sh
 curl -fsS -H 'Content-Type: application/json' \
@@ -233,6 +247,10 @@ Expected table values are counts and average ages from the generated fixture, ex
 
 **Goal:** Complete the same employee audit under a profile that requires diagnostics and compaction. Require the same correct report, all eleven workflow evidence records, and at least one accepted compaction event. This checks that compaction preserves the evidence needed to finish.
 
+**Problem and agent value:** Longer investigations accumulate enough tool output and failed attempts to pressure the model's context window. Hybrid reflection condenses older interactions into lessons, dead ends, and a provisional next direction, while the agent retains the original goal, recent complete interactions, and authoritative evidence separately. This can let the agent continue the audit without resending its entire working history.
+
+**What this test exercises:** The stress profile runs the audit with compaction enabled. The assertions require a completed answer with the same fixture values as Test 3, eleven recorded evidence items, and at least one accepted compaction event. Together they show that this run finished with evidence after compaction; they do not by themselves prove every summary was semantically faithful, test malformed-summary rejection, or measure token savings or performance.
+
 ```sh
 curl -fsS -H 'Content-Type: application/json' \
   -d '{"config_ref":"compaction-stress.yaml","user_prompt":"Audit employee corruption, calculate the normalized New York median valid salary, and generate and validate the clean city report. Complete all workflow phases. In the final answer, start with Phase 3, include the actual city table, and include the labeled New York median salary."}' \
@@ -258,6 +276,10 @@ No fixed summary count or latency is required. A finished correct result and ret
 ## 8. Test 5 — workflow-free completion and continuation (`completion-no-workflow.yaml`)
 
 **Goal:** Verify direct completion through `POST /run`, then use `POST /resume` with a new user turn. The first answer must be exactly `CURL_OK`, and the second exactly `CURL_NEXT`. The original goal and config hash must remain unchanged, and the run count must increase by one.
+
+**Problem and agent value:** Some tasks need controlled output and follow-up conversation without a multi-phase workflow or tools. A durable session can accept a further turn while preserving its original goal and configuration, making continuation distinguishable from creating a new task with silently changed settings.
+
+**What this test exercises:** The test appends a message, completes a synchronous run, resumes with a new instruction, and compares the before/after session state. Its assertions check both exact fixture answers, unchanged goal and configuration hash, and an incremented run count. It tests this continuation path and output behavior, not the correctness of arbitrary workflow-free answers or every final-output guardrail.
 
 ```sh
 curl -fsS -H 'Content-Type: application/json' \
@@ -290,6 +312,10 @@ jq -e --slurpfile before "$OUT/05-before-resume.json" '
 ## 9. Test 6 — tool error, bounded stop, and resume (`tool-recovery.yaml`)
 
 **Goal:** Stop a run after one model decision, confirm the bounded run did not complete, then resume. The final response must be exactly `RECOVERY_OK 10.0.0.5 83`; all three phases must be complete and the error from the naive parser must appear in session memory. After the workflow reaches `complete`, any further tool call is rejected before execution. The profile's exact-output rule rejects prose or formatting around the required answer.
+
+**Problem and agent value:** A task may encounter a predictable tool failure or exhaust its run allowance before it has finished. The agent can preserve the failure as diagnostic evidence, continue from the recorded phase, choose a corrected parser, and validate the result rather than discarding the work or reporting an incomplete answer as success.
+
+**What this test exercises:** It enforces a one-decision limit, checks the initial unsuccessful state, resumes, and inspects the final state and durable executions. The assertions require the naive error, robust result, positive validator result, three completed phases, exact final answer, and exactly three intended executions. This covers bounded continuation and a read-only tool-error workflow; it does not simulate a crash during an external side effect, nor does it force a post-completion tool proposal or independently exercise every exact-answer rejection.
 
 ```sh
 curl -fsS -H 'Content-Type: application/json' \
@@ -372,6 +398,8 @@ Run these against the same backend after tests 1–6.
 
 A reference to a profile outside the approved config folder must be rejected with HTTP 422 by the shared API. Save the response body and status for review:
 
+**Purpose and scope:** Configuration determines available tools and policy, so a caller must not escape the trusted profile directory to read an arbitrary file. This request tests the traversal rejection through the public API. Under contract 2.0, include a valid fresh idempotency key and inspect the error body as well as the status: an unkeyed 422 alone does not establish that path validation ran.
+
 ```sh
 HTTP_CODE=$(curl -sS -o "$OUT/10-invalid-config.json" -w '%{http_code}' \
   -H 'Content-Type: application/json' \
@@ -384,6 +412,8 @@ printf 'HTTP %s\n' "$HTTP_CODE"
 ### Verify state survives a real server restart
 
 Save a completed session's identity and answer, stop the server with Ctrl-C in its server terminal, restart the **same implementation** using its command in section 2, and wait until health responds. Then retrieve the same session. The id, goal, config hash, completed status and final answer must match. This proves completed-state hydration across a process restart; it does not test a process crash during a tool call.
+
+**Why this matters:** An operator should be able to recover the result and its original task identity after a service restart. The before/after comparison checks those persisted fields, rather than assuming the process's in-memory state is durable. In-flight recovery and replay require the separate interruption and persistence checks.
 
 ```sh
 curl -fsS "$AGENT_URL/sessions/$C3" -o "$OUT/10-before-restart.json"
@@ -404,6 +434,8 @@ diff -u "$OUT/10-before-restart-summary.json" "$OUT/10-after-restart-summary.jso
 ## 12. Test transcript pagination and stable message IDs
 
 Use the completed continuation session from Test 5. Transcript pages use a sequence cursor and a fixed `through_sequence` watermark. The first two entries must have consecutive sequence numbers and different stable message IDs.
+
+**Purpose and scope:** Long-running investigations need inspectable, ordered history even when the active model context has been compacted. Two one-entry requests test cursor advancement, a fixed history boundary, and distinct message identities. This samples the first two entries; it does not establish that every page or record is correct.
 
 ```sh
 curl -fsS "$AGENT_URL/sessions/$C5/transcript?after_sequence=0&limit=1" \
@@ -427,6 +459,8 @@ jq -e --slurpfile first "$OUT/11-transcript-page-1.json" \
 ## 13. Test event/run history pagination
 
 Test 5 creates two completed runs (`/run`, then `/resume`). These commands verify stable cursors, ordered pages, and distinct run identities.
+
+**Purpose and scope:** Operators need to distinguish attempts and reconstruct their lifecycle. The test reads two event pages within a watermark and two run pages, checking increasing event IDs and distinct completed run IDs with positive fences. It checks these returned records, not every possible pagination boundary or stale-writer fencing condition.
 
 ```sh
 curl -fsS "$AGENT_URL/sessions/$C5/events?after=0&limit=1" -o "$OUT/12-events-page-1.json"
@@ -453,6 +487,8 @@ jq -e --arg previous "$RUN_AFTER" '.runs | length == 1 and .[0].run_id != $previ
 ## 14. Test execution and compaction diagnostics, archive and retention APIs
 
 Test 4 should generate multiple tool executions and compaction diagnostic entries. These endpoints return bounded pages, independent of the active prompt history.
+
+**Purpose and scope:** A useful agent must expose what it executed and why it compacted, including after older messages leave its working context. These queries inspect two execution and diagnostic pages, compaction event/decision availability, and the declared retention and archive state. They test read-side observability and retention eligibility; they do not perform or prove safe pruning. The second diagnostic page assumes at least two attempts, which is a stronger requirement than Test 4's single accepted compaction.
 
 ```sh
 curl -fsS "$AGENT_URL/sessions/$C4/executions?limit=1" -o "$OUT/13-executions-page-1.json"
@@ -498,6 +534,8 @@ jq -e '.runs | type == "array"' "$OUT/13-abandoned-runs.json"
 **Pass:** execution/event/diagnostic cursors advance; the compaction stress session has event, attempt, and decision entries; archive and abandoned-run APIs return arrays; the completed stress session is eligible under the keep-all default with no running lifecycle or unresolved execution. Do not prune or delete data in this test suite.
 
 ## 15. Test actual SSE socket disconnect and resume
+
+**Problem and purpose:** A client can lose its streaming connection while a model request is in flight. This controlled integration test checks that the agent records cancellation for the correct run and can resume the same task without losing committed work. It validates interruption handling at the HTTP/model boundary, not recovery of an external tool effect.
 
 Run the standard-library Python integration suite against the local agent:
 
@@ -546,6 +584,8 @@ exit status. Preserve evidence and fix the reported failure; do not regenerate t
 database to address a socket-test failure.
 
 ## 16. Test `/cancel`, competing ownership, and continuation across workers
+
+**Problem and purpose:** Two service processes may receive requests for the same session while a user wants to stop the active run. This scenario checks that the second worker observes the owner, rejects competing run/input requests, requests cancellation, and can resume the task with the goal, configuration, and evidence retained. These API observations exercise ownership behavior across workers; they do not independently inject a stale writer at every commit boundary or prove external-service fencing.
 
 This test uses two server processes on the same PostgreSQL database. Keep the first on port `8081`; start a second copy of the same implementation on port `8082` using the same environment and the matching command below. Keep both server terminals open. Two processes are required to test database ownership/fencing across workers.
 
@@ -609,6 +649,8 @@ jq -e --slurpfile old "$OUT/15-cancelled-state.json" \
 
 ## 17. Repeat the full suite for all four languages
 
+**Purpose:** The same task and assertions across implementations expose observable differences in behavior, rather than assuming that matching language-specific examples imply parity. Separate evidence directories associate each result with the server tested. A successful run of a subset is evidence for that subset, not full contract certification.
+
 Run sections 1–16 first against Python, then Go, Rust, and Java. For each language, stop the previous server, start the selected implementation on `8081`, start its second process on `8082` for Test 16, and run the same curl commands and assertions. Change only `IMPLEMENTATION` and create a fresh evidence directory:
 
 ```sh
@@ -644,6 +686,8 @@ Keep every `$OUT` folder, including failed requests, SSE logs and state snapshot
 
 ## 19. Shared PostgreSQL persistence qualification
 
+**Problem and purpose:** Network loss, duplicate requests, process restarts, and concurrent workers can otherwise cause lost work, duplicate effects, or misleading outcomes. This suite tests durable command identity, original-response replay, consistent ledger relationships, ownership, and protected recovery evidence through the common API and independent database reads. Its controlled scenarios establish the specific matrix below; recipient-side idempotency and global exactly-once effects cannot be inferred for arbitrary external systems.
+
 Run the repository-root launcher against an initialized schema-6 database and the selected contract-2.0.0 agent:
 
 ```bash
@@ -651,6 +695,21 @@ Run the repository-root launcher against an initialized schema-6 database and th
 ```
 
 The runner executes exactly the twelve current [DU-06 checks](design_update.md#du-06-contract-200-checks-and-measurements--current), `DU-06-V2-C01`–`DU-06-V2-C12`. It reads `AGENT_URL`, `AGENT_SESSION_DATABASE_URL`, `AGENT_FIXTURE_DATABASE_URL`, `SECOND_AGENT_URL` and `AUX_SOCKET_MODEL_URL` from `.env` or the environment. Defaults are primary port 8081, second worker port 8082 and the external controlled model fixture at `http://127.0.0.1:18089/v1`. No implementation flag is accepted and no agent package is imported. The Python harness has its own dependency environment under root `scripts/`.
+
+| Check | Scenario and utility being tested |
+| --- | --- |
+| C01 | Start on the pinned schema and admit a keyed command; inspect its identity and related records so a task can be traced to one request. |
+| C02 | Replay a completed command with the same key and request; verify the original response returns without a new operation or revision. |
+| C03 | Reuse a key with changed content or route; require a conflict and preservation of the original outcome. |
+| C04 | Send concurrent duplicate requests; verify they converge on one command and logical operation. |
+| C05 | Replay an earlier command after later work; verify its historical response is returned without rolling back newer state. |
+| C06 | Suppress a caller response and retry the retained key; resolve the original command rather than creating replacement work. |
+| C07 | Interrupt a controlled operation and inspect committed records and replay; check aggregate consistency and retained identities for the interruption actually exercised. |
+| C08 | Restart the server and retrieve and replay settled work; check that identities and outcomes survive a real process restart. |
+| C09 | Send duplicate and competing requests to two processes; check shared ownership, command identity, and revision consistency. |
+| C10 | Inspect outcomes from success, failure, and interruption scenarios; distinguish definitive results from uncertain or blocked work and replay recorded failures. |
+| C11 | Compare ledger relationships and immutable records after work, replay, and restart; check that revisions, transcript, runs, actions, and attempts remain connected. |
+| C12 | Verify export and actual telemetry pruning for a test session; check protected recovery records and replay remain available. |
 
 Keep the actual model service available for C11's positive log-tool workflow, which produces real execution/attempt/history rows. Keep port 18089 free for the external controlled model used by C07/C09; both worker processes must resolve `socket-integration.yaml` to that same URL. The fixture is external HTTP infrastructure; it does not add callbacks or branches inside an agent.
 
