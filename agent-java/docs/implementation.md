@@ -1,64 +1,24 @@
-> Contract-1.1.0 port status: pending. The implementation described below is the earlier baseline, including its superseded compaction algorithm; it is not the upgraded Python design. Implement the [current upgrade specification](../../design_update.md), [observable contract](../../contract.md) and [shared tests](../../test-cases.md). The [frozen Python 1.0.0 baseline](../../archive/agent-python-cleanup-20261016/reference/python-1.0.0/README.md) is historical and predates the latest completion changes.
+# Build and operate the Java runtime
 
-# Java implementation: build, compile, and run
-
-See the shared [observable contract and conformance audit](../../contract.md) for current differences, qualification requirements, and the common Python HTTP test harness.
-
-`agent-java` is the Spring Boot WebFlux implementation of the `agent-python` API. It uses Java 21, Maven, PostgreSQL through R2DBC, and the shared YAML profiles and fixture tables in the repository. Run only one implementation on a given port at a time.
-
-## Requirements
-
-- JDK 21 (verify with `java -version`)
-- Maven 3.9 or newer (verify with `mvn -version`)
-- PostgreSQL reachable with the credentials configured below
-- An OpenAI-compatible chat-completions endpoint for model-backed runs
-
-On macOS, the build includes Netty's native DNS resolver for both Apple Silicon and Intel Macs. When running on JDK 24 or newer, the Maven run configuration and packaged executable jar enable native access for the classpath libraries that load this resolver. If launching directly from an IDE, add `--enable-native-access=ALL-UNNAMED` to the run configuration's VM options.
-
-## Configure
-
-The defaults are in `src/main/resources/application.yml`, but this earlier baseline still contains a legacy-project database fallback. Use the complete [Java startup block in the shared test guide](../../test-cases.md#java) from the repository root. It reads the root `.env`, verifies `universal_state`, and translates `AGENT_SESSION_DATABASE_URL` into Java's R2DBC connection variables without printing credentials. Model selection remains `.env` `MAIN_MODEL`; do not replace it with a placeholder model export.
-
-The Spring configuration imports the repository-root `.env` file when available. `AGENT_CONFIG_ROOT` points to the trusted YAML profile directory. The PostgreSQL database must have the shared fixture tables; generate them from the repository root with:
+Use JDK 21 or newer and Maven. The build targets Java 21; regressions also run on the installed JDK 25. The executable artifact is `agent-java/target/agent-java-2.0.0.jar`.
 
 ```sh
-uv run --project agent-python python agent-python/scripts/generate_fixtures.py
+mvn -f agent-java/pom.xml clean verify
+AGENT_CONFIG_ROOT="$PWD/config" PORT=8000 mvn -f agent-java/pom.xml spring-boot:run
 ```
 
-The Java service creates its session and event tables on startup. `AGENT_SESSION_R2DBC_URL` may use the usual `r2dbc:postgresql:` scheme; use the user/password variables produced by the shared startup conversion block.
+The root `.env` is imported from repository-root or `agent-java` working directories. Session persistence uses JDBC and `AGENT_SESSION_DATABASE_URL`; fixture reads use R2DBC and `AGENT_FIXTURE_DATABASE_URL`, falling back to the session URL. The keyed controlled recipient uses JDBC against the fixture URL. `AGENT_SESSION_DB_USER` / `AGENT_SESSION_DB_PASSWORD` supply credentials when the URL omits them. No live credentials are stored in source or test fixtures.
 
-## Compile and package
+A stable nonempty `AGENT_DEPLOYMENT_NAMESPACE` is mandatory. Existing sessions retain resolved configuration and goal anchors. New sessions read current profile/environment settings; the root `.env` controls `MAIN_MODEL`. The server does not pin or substitute model names.
 
-From the repository root:
+Only an already initialized compatible shared schema 6 is accepted. Startup uses a read-only transaction to check columns, types, defaults, constraints and indexes against the pinned manifest. It recovers abandoned run metadata using normal command/session fencing. Failed startup validation propagates; no DDL or migration is attempted. HTTP traffic is held at 503 until startup completes.
 
-```sh
-mvn -f agent-java/pom.xml clean package
-```
+All mutation endpoints require `Idempotency-Key` with 1..255 printable ASCII characters without spaces. Reuse the same key only for the identical normalized method/route/body. The command envelope includes `command_id`, `session_id`, `run_id`, status URI, status, cached response and recovery reason. An active duplicate returns 202; a terminal duplicate returns the original status/body with replay headers.
 
-The executable jar is `agent-java/target/agent-java-0.2.0.jar`. To compile without packaging:
+Session routes include current state, messages, JSON/SSE runs, resume, explicit-run cancellation, transcript, events, diagnostics, runs, executions, archives, retention, and read-only event reconnection. `/runs/abandoned` exposes bounded inspection. UUIDs, limits and cursors are validated before SQL. Stream disconnects request cancellation while allowing the in-flight invocation to settle. Resume creates a new run while retaining pending action identities.
 
-```sh
-mvn -f agent-java/pom.xml clean compile
-```
+Archive administration is available through the executable jar's `admin export`, `admin verify`, and `admin prune` operations; exact commands are in the [README](../README.md). Export creates a new restricted-permission file and never replaces an existing file. Pruning changes only eligible telemetry rows through a guarded transaction; it does not change the schema. Keep every dependency archive available for subsequent pruning checks.
 
-## Run
+Java tests use local files, mocked model/tool interfaces, WebFlux HTTP binding and scripted JDBC. Transaction regressions inject aggregate-write failures and lost commit acknowledgements; these are controlled regressions, not live PostgreSQL crash/partition qualification. No database connection is opened by these tests.
 
-From the repository root:
-
-```sh
-AGENT_CONFIG_ROOT=config PORT=8000 mvn -f agent-java/pom.xml spring-boot:run
-```
-
-Or run the packaged application:
-
-```sh
-AGENT_CONFIG_ROOT=config PORT=8000 java -jar agent-java/target/agent-java-0.2.0.jar
-```
-
-The API listens on `http://127.0.0.1:8000`. Swagger UI is at `/docs`; the OpenAPI document is at `/openapi.json`. Check startup with `curl http://127.0.0.1:8000/health` and list profiles with `curl http://127.0.0.1:8000/configs`.
-
-## API and runtime behavior
-
-The earlier HTTP surface is `GET /health`, `GET /configs`, `POST /sessions`, `GET /sessions/{session_id}`, `POST /sessions/{session_id}/messages`, `POST /sessions/{session_id}/run`, `POST /sessions/{session_id}/run/stream`, and `POST /sessions/{session_id}/resume`. Both stream endpoints use server-sent events. The additional storage/recovery routes, extended state, atomic writes and ownership/fencing remain required work in [design_update.md](../../design_update.md). The current baseline stores session/configuration JSONB and separate events; selecting a YAML profile at creation does not by itself establish the upgraded configuration validation and recovery guarantees.
-
-For request and response fields, status codes, and the exact OpenAPI schema, use the live `/openapi.json` generated by Springdoc. `agent-python` exposes its FastAPI schema at `/openapi.json` as well. Use the shared repository [test case runbook](../../test-cases.md) for the common request examples and expected fixture results.
+The user runs the unchanged repository `test-cases.sh`, `persist.sh` and `aux-tests.sh` against the Java server. Those results, including required restart, second-worker, socket and actual export/pruning controls, determine shared qualification. Historical Python or other-language passes are not Java evidence.

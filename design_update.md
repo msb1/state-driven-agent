@@ -63,7 +63,9 @@ During a development stage, run checks whose dependencies are ready and carry la
 
 Required bounded performance workloads are concentrated in **DU-04 (context)** and **DU-09 (storage)**. DU-07/08 require observed renewal/cancellation/recovery timings, and DU-10 records export/prune timings. Other packages need focused correctness checks and counters, not a fresh live-model benchmark after every edit. Share one workload result across the DU requirements it actually covers rather than rerunning the same workload for each section. No unchanged Python benchmark rerun or compaction tuning is requested.
 
-## 3. Current implementation comparison
+## 3. Historical implementation comparison
+
+This table records the original source review. Java has since been upgraded and passed the shared shell suites; current evidence is in [digest-java.md](digest-java.md).
 
 **Present** means source contains the stated facility, not that it was requalified in this review. **Earlier/partial** means useful code exists but does not satisfy the upgraded contract. **Missing** means the reviewed target runtime has no equivalent facility.
 
@@ -650,7 +652,7 @@ Passing the curl guide establishes its HTTP scenarios. It does not by itself est
 
 ## 18. Completion checklist and handoff
 
-The source-review status board starts as follows. Update a cell only with the corresponding implementation and user-run evidence; an older successful business example is not completion of the package.
+The following historical source-review status board predates the Java upgrade and shared shell qualification; see [digest-java.md](digest-java.md) for current Java status. Update a cell only with the corresponding implementation and user-run evidence; an older successful business example is not completion of the package.
 
 | Work package | Check set | Go | Rust | Java |
 | --- | --- | --- | --- | --- |
@@ -711,7 +713,7 @@ Preserve original action/run association on resume; a new recovery command owns 
 | V2-06 Retention / DU-10 | Protected receipts and attempt evidence, no automatic key reuse/expiry; setup reset only under explicit administration | Telemetry prune preserves command/commit/action/attempt evidence and historical replay |
 | V2-07 Universal qualification | Shared Python controller, SQL ledger assertions and fixed inputs; actual selected runtime for HTTP/recovery | Same tests against Python/Go/Rust, then Java; source/backend/version evidence, no language-specific expected outcomes or production hooks |
 
-Setup/fixtures and the identity tooling can be implemented first. Then implement the Python runtime reference and qualify it; implement Go/Rust to the same requirements, followed by Java. The initial setup/specification stage did not implement those runtime changes; section 19.6 records the subsequent Python implementation. No runtime advertises contract 2.0.0/schema 6 until the relevant packages are implemented. Runtime qualification and full V2-07 conformance remain pending; section 19.6 records the Python implementation, while Go/Rust/Java still require their runtime changes.
+Setup/fixtures and the identity tooling can be implemented first. Then implement the Python runtime reference and qualify it; implement Go/Rust to the same requirements, followed by Java. The initial setup/specification stage did not implement those runtime changes; section 19.6 records the subsequent Python implementation. No runtime advertises contract 2.0.0/schema 6 until the relevant packages are implemented. This describes the initial setup stage; section 19.6 records the subsequent Python implementation, and [digest-java.md](digest-java.md) records the completed Java implementation and shared shell results.
 
 ### 19.3 Concrete runtime algorithm
 
@@ -764,7 +766,7 @@ The current legacy runtime code is not schema-6 compatible: pending commit handl
 
 Python V2-01 through V2-06 now have a runtime implementation and focused isolated regression coverage; final user-run qualification is pending. This supersedes the preceding blanket pending-runtime statement for Python only. Source modules: `identity.py`, `schema_validation.py`, `commands.py`, `command_api.py`, `persistence.py`, `execution.py`, `execution_store.py`, `api.py` and `retention.py`. Command request envelopes contain immutable normalized `input` and frozen `admission`; execution-outbox hashing includes both execution and attempt lists. Metadata-only cancellation commits its target/outcome without racing the active owner's hot revision.
 
-The shell clients record and send request keys and explicit cancel run IDs. The common socket harness carries keys as well. No production fault hooks were introduced. The full shared `persist.sh` matrix remains separate qualification work; its strict incomplete status is not removed by native Python test results. Go/Rust/Java implementation and cross-language evidence remain pending.
+The shell clients record and send request keys and explicit cancel run IDs. The common socket harness carries keys as well. No production fault hooks were introduced. The full shared `persist.sh` matrix remains separate qualification work; its strict incomplete status is not removed by native Python test results. This was the status at the Python implementation update; subsequent Java implementation and shared shell results are recorded in [digest-java.md](digest-java.md).
 
 Python regression evidence: 14 isolated real-PostgreSQL/HTTP/TCP tests passed, including ten aggregate-write fault families, uncertain commit acknowledgement, historical receipts, keyed recipient recovery, verification, concurrent admission, startup, protected retention and real socket cancellation/resume. Five offline identity/setup tests passed. These are controlled engineering regressions; no live-provider workload or user shell suite was executed.
 
@@ -775,3 +777,13 @@ The [normalization update](agent-python/docs/compaction.md#2026-10-29-normalizat
 Validation status update superseding earlier Python pending statements: user-run `test-cases.sh` passed with successful compaction, auxiliary items 11–16 completed, and all twelve DU-06-V2 cases passed in `archive/persistence/20261029T145016-e80e86cd/result.json`. Cross-language implementation/qualification remains pending. This records the declared suite scope, not whole-contract conformance.
 
 The current persistence qualification is documented in section 9 and [test-cases.md section 19](test-cases.md#19-shared-postgresql-persistence-qualification), including all twelve cases, environment/prerequisites, restart/second-worker controls, read-only database verification, mandatory C12 export/pruning, skip behavior, artifacts and exit codes. The shared harness does not invoke a language-specific repository. For Python's operator C12 commands see [operations.md](agent-python/docs/operations.md#retention-explicit-administration-only).
+
+## Java runtime implementation update — 2026-11-03
+
+Java now has a coordinated native implementation targeting contract 2.0.0/schema 6, applicable 1.1.0 behavior, and current Python compaction normalization. This supersedes the earlier Java **implementation-pending** statements for DU-01 through DU-11 and V2-01/V2-03 through V2-06; the user-run shared shell qualification has since passed. V2-02 continues to use the existing shared initializer/schema/fixtures without runtime DDL or database changes. The recorded user-run shared qualification includes the persistence, socket, restart, two-worker, and pruning scenarios.
+
+The implementation covers immutable configuration/model requests, workflow/completion/bindings, complete-request budgets and staged compaction, atomic schema-6 persistence and commit receipts, keyed command admission/replay, ownership/fencing, durable action attempts and recipient verification/recovery, cooperative cancellation, history/event APIs, and archive/retention administration. The temporary Java startup block is removed; startup validates the existing layout read-only and recovers abandoned metadata without executing user work.
+
+Evidence and operating commands: [Java upgrade record](digest-java.md), [README](agent-java/README.md), [architecture](agent-java/docs/architecture.md). The clean Java build passed 72 isolated regressions. Current Python functions independently validated Java snapshot/context/config/progress/source hashes, and the packaged archive verifier passed an offline smoke check. Scripted JDBC fault boundaries are isolated engineering tests, not live PostgreSQL crash/partition evidence. No shared shell script or schema file was changed and no database connection was opened during validation.
+
+The user ran the unchanged `test-cases.sh`, `persist.sh` and `aux-tests.sh` against Java. The retained evidence supports passing all three suites, including restart, second-worker, disconnect and actual export/pruning controls; see [digest-java.md](digest-java.md) for evidence and limits.

@@ -81,7 +81,7 @@ For example, consider a client requesting a session run that invokes the control
 
 As a concrete retry, if execution `E` in session `S` produced key `K` and the fixture stored a receipt for `K`, repeating the dispatch for **that same execution** sends `K` again and reads the existing result. A new execution `E2` produces a different key even for the same arguments: the system treats it as a new action. Similarly, retrying the original HTTP request with `run-request-42` finds the original command; sending an identical request under `run-request-43` does not deduplicate it against the first request. These distinctions are intentional and are essential when deciding where the application must supply a durable business-operation identifier.
 
-The Python paths above illustrate the reference implementation. Go's corresponding identity and fixture-recipient code is in [`identity_v2.go`](agent-go/internal/agent/identity_v2.go) and [`fixture_recipient_v2.go`](agent-go/internal/agent/fixture_recipient_v2.go); Rust's is in [`identity.rs`](agent-rust/src/identity.rs) and [`actions.rs`](agent-rust/src/actions.rs). Consult the current [implementation status](README.md#universal-state-driven-agent): shared contract-2.0 qualification remains pending, and Java's upgrade is not complete.
+The Python paths above illustrate the reference implementation. Go's corresponding identity and fixture-recipient code is in [`identity_v2.go`](agent-go/internal/agent/identity_v2.go) and [`fixture_recipient_v2.go`](agent-go/internal/agent/fixture_recipient_v2.go); Rust's is in [`identity.rs`](agent-rust/src/identity.rs) and [`actions.rs`](agent-rust/src/actions.rs). Consult the current [implementation status](README.md#universal-state-driven-agent): Java implements contract 2.0.0 and has passed the shared shell suites; see [digest-java.md](digest-java.md) for evidence.
 
 **RFC 8785 canonicalization by language:** Inspection of the runtime code shows that only Python currently delegates canonicalization to a dedicated RFC 8785 library. Go and Rust implement canonicalization directly, using general-purpose JSON libraries for parts of the work. The fixed vectors and boundary tests provide evidence for the cases they cover; they do not by themselves prove complete RFC 8785 conformance.
 
@@ -90,7 +90,7 @@ The Python paths above illustrate the reference implementation. Go's correspondi
 | Python | The [`rfc8785`](agent-python/pyproject.toml) package: [`canonical()`](agent-python/src/agent_python/identity.py) calls `rfc8785.dumps`. |
 | Go | Custom [`CanonicalV2`](agent-go/internal/agent/identity_v2.go), using the standard `encoding/json`, `strconv`, and UTF-16 utilities. It is not delegated to a dedicated JCS library. |
 | Rust | Custom [`canonical`](agent-rust/src/identity.rs), using `serde_json` for JSON values and some serialization. It is not delegated to a dedicated JCS library. |
-| Java | Contract 2.0 canonicalization is not yet implemented; no library selection is established here. |
+| Java | Implemented using RFC 8785 canonicalization; see [JsonSupport.java](agent-java/src/main/java/com/statedriven/agent/JsonSupport.java) and [digest-java.md](digest-java.md). |
 
 ## Fixture tables
 

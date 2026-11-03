@@ -4,7 +4,7 @@ The universal state-driven agent is a configurable agent runtime for tasks that 
 
 We are developing the same language-independent agent in **Python, Go, Java, and Rust** against a shared observable contract. [Contract 1.1.0](contract.md) established the baseline; **contract 2.0.0 and PostgreSQL schema 6** are the active target, adding durable command identity, replay, commit receipts, and external action recovery. The contract defines the same behavior and qualification expectations for every language; it does not imply that the ports are already equivalent.
 
-Python is the reference for the 2.0 runtime. The Go and Rust implementations also describe 2.0 runtime upgrades, while Java's 2.0 port and shared end-to-end qualification remain pending. Python, Go, and Rust still need the shared live qualification; earlier 1.1.0 results do not certify 2.0. See [contract.md](contract.md), [design_update.md](design_update.md), and the language READMEs for requirements, evidence, and current limitations.
+Python is the reference for the 2.0 runtime. Java implements contract 2.0.0 and schema 6; the user-run `test-cases.sh`, `persist.sh`, and `aux-tests.sh` qualification has passed. See [digest-java.md](digest-java.md) for evidence and scope. Go and Rust implementation and qualification status is recorded in their digests. See [contract.md](contract.md), [design_update.md](design_update.md), and the language READMEs for requirements, evidence, and current limitations.
 
 ## What it is for
 
